@@ -393,9 +393,59 @@ const dns_on = on(main.dns_enabled, true);
 const dns_remote = opt(main.dns_remote, '1.1.1.1');
 const dns_direct = opt(main.dns_direct, '8.8.8.8');
 
-function outref(name) {
+function outref(name, label) {
 	if (name == 'direct' || name == 'block') return { outboundTag: name };
+	if (substr(name ?? '', 0, 5) == 'node-') {
+		if (length(filter(nodes, n => n.tag == name))) return { outboundTag: name };
+		push(warnings, `Rule "${label}" sends traffic to a server that is off, missing or invalid, so it uses the proxy instead`);
+	}
 	return target;
+}
+
+// Sorts one "match" entry into domain, ip or port. Returns null (with a warning) for bad entries.
+function classify(v, label) {
+	v = trim(v);
+	if (v == '') return null;
+	let m = match(v, /^([a-z-]+):(.+)$/);
+	if (match(v, /^[0-9a-fA-F]*:[0-9a-fA-F:]+(\/[0-9]+)?$/))
+		return [ 'ip', v ];
+	if (m && m[1] == 'port') {
+		if (valid_ports(m[2])) return [ 'port', m[2] ];
+		push(warnings, `Rule "${label}": "${v}" is not a valid port or range, ignored`);
+		return null;
+	}
+	if (m && index(IP_PREFIX, m[1]) >= 0) return [ 'ip', v ];
+	if (m && index(DOMAIN_PREFIX, m[1]) >= 0) return [ 'domain', v ];
+	if (m) {
+		push(warnings, `Rule "${label}": unknown type "${m[1]}:" in "${v}", ignored`);
+		return null;
+	}
+	if (match(v, /^[0-9.\/]+$/)) {
+		if (is_ipv4(v)) return [ 'ip', v ];
+		push(warnings, `Rule "${label}": "${v}" is not a valid IPv4 address or range, ignored`);
+		return null;
+	}
+	return [ 'domain', v ];
+}
+
+// Keeps only entries of the wanted kind ('domain' or 'ip').
+function entries(vals, kind, label) {
+	let out = [];
+	for (let v in list(vals)) {
+		let c = classify(v, label);
+		if (!c) continue;
+		if (c[0] == kind) push(out, c[1]);
+		else push(warnings, `Rule "${label}": "${v}" does not belong in the ${kind} list, ignored`);
+	}
+	return out;
+}
+
+function portspec(v, what, label) {
+	v = join(',', list(v));
+	if (v == '') return null;
+	if (valid_ports(v)) return v;
+	push(warnings, `Rule "${label}": ${what} "${v}" is not valid, ignored`);
+	return null;
 }
 
 let rules = [
@@ -407,41 +457,68 @@ let rules = [
 	rule({ inboundTag: [ 'socks-in' ] }, target)
 ];
 
+// "Basic" lists come first, like in 3x-ui.
+for (let b in [ [ 'block_ip', 'ip', 'block', 'Blocked IPs' ], [ 'block_domain', 'domain', 'block', 'Blocked domains' ],
+                [ 'direct_ip', 'ip', 'direct', 'Direct IPs' ], [ 'direct_domain', 'domain', 'direct', 'Direct domains' ] ]) {
+	const v = entries(main[b[0]], b[1], b[3]);
+	if (!length(v)) continue;
+	let f = {};
+	f[b[1]] = v;
+	push(rules, rule(f, { outboundTag: b[2] }));
+}
+
 uci.foreach('xraypanel', 'rule', (s) => {
 	if (!on(s.enabled, true)) return;
 	const label = opt(s.label, s['.name']);
-	let dom = [], ip = [], port = [];
-	for (let v in list(s.match)) {
-		v = trim(v);
-		if (v == '') continue;
-		let m = match(v, /^([a-z-]+):(.+)$/);
-		if (match(v, /^[0-9a-fA-F]*:[0-9a-fA-F:]+(\/[0-9]+)?$/))
-			push(ip, v);
-		else if (m && m[1] == 'port') {
-			if (valid_ports(m[2])) push(port, m[2]);
-			else push(warnings, `Rule "${label}": "${v}" is not a valid port or range, ignored`);
+	const t = outref(opt(s.outbound, 'direct'), label);
+
+	// Older rules keep everything in one "match" list; each kind becomes its own rule.
+	if (s.match != null && s.domain == null && s.ip == null && s.port == null) {
+		let got = { domain: [], ip: [], port: [] };
+		for (let v in list(s.match)) {
+			let c = classify(v, label);
+			if (c) push(got[c[0]], c[1]);
 		}
-		else if (m && index(IP_PREFIX, m[1]) >= 0)
-			push(ip, v);
-		else if (m && index(DOMAIN_PREFIX, m[1]) >= 0)
-			push(dom, v);
-		else if (m)
-			push(warnings, `Rule "${label}": unknown type "${m[1]}:" in "${v}", ignored`);
-		else if (match(v, /^[0-9.\/]+$/)) {
-			if (is_ipv4(v)) push(ip, v);
-			else push(warnings, `Rule "${label}": "${v}" is not a valid IPv4 address or range, ignored`);
+		if (!length(got.domain) && !length(got.ip) && !length(got.port)) {
+			push(warnings, `Rule "${label}" has nothing to match and was ignored`);
+			return;
 		}
-		else
-			push(dom, v);
+		if (length(got.domain)) push(rules, rule({ domain: got.domain }, t));
+		if (length(got.ip)) push(rules, rule({ ip: got.ip }, t));
+		if (length(got.port)) push(rules, rule({ port: join(',', got.port) }, t));
+		return;
 	}
-	if (!length(dom) && !length(ip) && !length(port)) {
+
+	// Every filled field must match (AND), as in Xray and 3x-ui.
+	let f = {};
+	const dom = entries(s.domain, 'domain', label);
+	const ip = entries(s.ip, 'ip', label);
+	const src = entries(s.source, 'ip', label);
+	if (length(dom)) f.domain = dom;
+	if (length(ip)) f.ip = ip;
+	if (length(src)) f.source = src;
+	const port = portspec(s.port, 'port', label);
+	const sport = portspec(s.source_port, 'source port', label);
+	if (port) f.port = port;
+	if (sport) f.sourcePort = sport;
+	if (index([ 'tcp', 'udp', 'tcp,udp' ], s.network) >= 0) f.network = s.network;
+	const proto = filter(list(s.protocol), p => index([ 'http', 'tls', 'quic', 'bittorrent' ], p) >= 0);
+	if (length(proto)) f.protocol = proto;
+	const inb = filter(list(s.inbound), p => index([ 'redir-in', 'socks-in' ], p) >= 0);
+	if (length(inb)) f.inboundTag = inb;
+	let attrs = {};
+	for (let a in (type(s.attrs) == 'array' ? s.attrs : (s.attrs ? [ s.attrs ] : []))) {
+		const i = index(a, '=');
+		if (i > 0) attrs[trim(substr(a, 0, i))] = trim(substr(a, i + 1));
+		else push(warnings, `Rule "${label}": attribute "${a}" is not key=value, ignored`);
+	}
+	if (length(attrs)) f.attrs = attrs;
+
+	if (!length(f)) {
 		push(warnings, `Rule "${label}" has nothing to match and was ignored`);
 		return;
 	}
-	const t = outref(opt(s.outbound, 'direct'));
-	if (length(dom)) push(rules, rule({ domain: dom }, t));
-	if (length(ip)) push(rules, rule({ ip: ip }, t));
-	if (length(port)) push(rules, rule({ port: join(',', port) }, t));
+	push(rules, rule(f, t));
 });
 
 push(rules, rule({ network: 'tcp,udp' }, (opt(main.default_out, 'proxy') == 'direct') ? { outboundTag: 'direct' } : target));

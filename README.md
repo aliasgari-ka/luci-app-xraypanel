@@ -10,7 +10,7 @@ It is built for routers with little memory. There is no extra daemon: the panel 
 
 - **Several servers.** Paste `vmess://`, `vless://` (including REALITY), `trojan://` and `ss://` share links, several at once, or a full Xray outbound as JSON. Transports: tcp, ws, grpc, httpupgrade, xhttp, http, kcp.
 - **Load balancing.** Lowest latency (Xray observatory), round robin or random. Or pin one server.
-- **Routing rules.** Ordered rules with `geosite:`, `geoip:`, `domain:`, `full:`, `keyword:`, `regexp:`, `ext:`/`ext-ip:` (custom .dat files), IP ranges and `port:`. Each rule sends traffic direct, through the proxy, or blocks it. Iranian sites, banks and apps go direct by default. Domain entries are matched first; IP entries apply once no domain entry matched.
+- **Routing like 3x-ui.** A *Basic* block with blocked/direct IP and domain lists, then an ordered table of full Xray rules: domain, IP, port, source IP and port (per device), network, protocol (sniffed), inbound and HTTP attributes. Each rule goes direct, through the proxy (balancer), to one chosen server, or is blocked. Entries use `geosite:`, `geoip:`, `domain:`, `full:`, `keyword:`, `regexp:`, `ext:`/`ext-ip:` and IP ranges. Iranian sites, banks and apps go direct by default. Domain entries are matched first; IP entries apply once no domain entry matched.
 - **DNS through Xray.** Avoids poisoned answers. Iranian domains and your proxy servers' hostnames are resolved directly.
 - **Automatic geo updates.** Daily or weekly through cron, downloaded through the proxy when possible. Files are checked against the published SHA-256 when the source has one, and tested against your rules before they replace the old ones.
 - **Fail-open watchdog.** Every minute the router checks the proxy. LAN traffic only goes through Xray while it answers. After three failed checks, LAN goes back to direct until the proxy recovers.
@@ -43,7 +43,7 @@ To build an installable package instead, put this folder under `package/` in an 
 Open `http://192.168.1.1` (your router's LAN address), log in, then go to **Services → Xray**.
 
 1. **Servers**: paste your links into *Add servers from links*, turn on *Enable Xray*, then **Save & Apply**.
-2. **Routing**: reorder or add rules. The first match wins.
+2. **Routing**: pick direct/blocked lists under *Basic*, then add rules. Rules are checked from the top and the first match wins; inside one rule every filled field must match.
 3. **Settings**: interfaces to route, devices that stay direct, DNS, geo update schedule.
 4. **Status**: service state, whether LAN is going through Xray, proxy latency, memory use, log, and buttons to restart or update geo files.
 
@@ -99,7 +99,7 @@ curl -fsSL https://raw.githubusercontent.com/aliasgari-ka/luci-app-xraypanel/mai
 **استفاده:** آدرس `http://192.168.1.1` را باز کنید، وارد شوید و به **Services → Xray** بروید.
 
 - **Servers**: لینک‌های `vmess://`، `vless://`، `trojan://` یا `ss://` را پیست کنید، *Enable Xray* را روشن کنید و **Save & Apply** بزنید.
-- **Routing**: سایت‌ها، بانک‌ها و اپ‌های ایرانی به‌صورت پیش‌فرض مستقیم می‌روند. قوانین از بالا به پایین بررسی می‌شوند.
+- **Routing**: مثل پنل ثنایی (3x-ui): بخش Basic برای لیست‌های مستقیم و مسدود، و جدول قوانین با دامنه، IP، پورت، IP دستگاه مبدأ، پروتکل و خروجی (مستقیم، پروکسی، یک سرور خاص یا مسدود). سایت‌ها، بانک‌ها و اپ‌های ایرانی به‌صورت پیش‌فرض مستقیم می‌روند.
 - **Settings**: انتخاب شبکه‌هایی که از Xray رد شوند، دستگاه‌هایی که همیشه مستقیم بمانند، DNS و زمان‌بندی آپدیت geo.
 - **Status**: وضعیت، تأخیر پروکسی، مصرف رم و لاگ.
 
