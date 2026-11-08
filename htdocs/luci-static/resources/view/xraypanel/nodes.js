@@ -115,6 +115,16 @@ function checkLink(value) {
 	return true;
 }
 
+// Anonymous UCI sections are renamed when a section above them is deleted, which would break
+// main.node, rule outbounds (node-<name>) and test results, so servers get fixed names.
+var nameSeq = 0;
+function nodeName() {
+	var name;
+	do name = 'n' + Date.now().toString(36) + (nameSeq++).toString(36);
+	while (uci.get('xraypanel', name));
+	return name;
+}
+
 // The import box takes one link per line, or a single JSON outbound (which may span lines).
 function importLines(value) {
 	value = (value || '').trim();
@@ -200,7 +210,7 @@ return view.extend({
 				// Pasting the same link twice should not create a second server.
 				if (seen[l]) return;
 				seen[l] = true;
-				var sid = uci.add('xraypanel', 'node');
+				var sid = uci.add('xraypanel', 'node', nodeName());
 				uci.set('xraypanel', sid, 'label', linkName(l) || summary(l));
 				uci.set('xraypanel', sid, 'link', l);
 				uci.set('xraypanel', sid, 'enabled', '1');
@@ -213,6 +223,9 @@ return view.extend({
 		s.anonymous = true;
 		s.sortable = true;
 		s.nodescriptions = true;
+		s.handleAdd = function(ev) {
+			return form.GridSection.prototype.handleAdd.call(this, ev, nodeName());
+		};
 		s.modaltitle = function(section_id) {
 			// Labels come from share links, so they are escaped before LuCI renders them as HTML.
 			return _('Server') + ': ' + '%h'.format(uci.get('xraypanel', section_id, 'label') || _('new'));

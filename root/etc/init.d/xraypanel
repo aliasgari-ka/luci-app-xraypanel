@@ -71,9 +71,34 @@ $msg"
 	return 0
 }
 
+# Anonymous sections (cfgXXXXXX) are renamed when a section above them is deleted, which breaks
+# main.node, rule outbounds and test results. Give old servers fixed names once.
+migrate_nodes() {
+	local i=0 line old new r changed=0
+	while line=$(uci -q -X show "xraypanel.@node[$i]" | head -n1) && [ -n "$line" ]; do
+		old=${line#xraypanel.}
+		old=${old%%=*}
+		case "$old" in
+			cfg[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f])
+				new="n${old#cfg}"
+				uci rename "xraypanel.$old=$new"
+				[ "$(uci -q get xraypanel.main.node)" = "$old" ] && uci set "xraypanel.main.node=$new"
+				for r in $(uci -X show xraypanel | sed -n "s/^xraypanel\.\([^.]*\)\.outbound='node-$old'\$/\1/p"); do
+					uci set "xraypanel.$r.outbound=node-$new"
+				done
+				changed=1
+				;;
+		esac
+		i=$((i + 1))
+	done
+	[ "$changed" = 1 ] && uci commit xraypanel
+	return 0
+}
+
 start_service() {
 	local enabled geo
 
+	migrate_nodes
 	config_load xraypanel
 	config_get_bool enabled main enabled 0
 	config_get geo main geo_update weekly
