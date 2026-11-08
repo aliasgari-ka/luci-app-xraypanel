@@ -27,8 +27,27 @@ var SECURITY = [
 	[ 'none', _('Open, no password') ]
 ];
 
-function pill(color, text) {
-	return E('span', { 'class': 'xn-pill', 'style': 'background:' + color }, text);
+// LuCI's E() inserts a plain string as HTML but an array of strings as text.
+// SSIDs, network names and addresses go through text().
+function text(s) {
+	return [ s == null ? '' : '' + s ];
+}
+
+function pill(color, label) {
+	return E('span', { 'class': 'xn-pill', 'style': 'background:' + color }, text(label));
+}
+
+// The known choices plus the network's current value, so editing never changes it silently.
+function securityChoices(current) {
+	var o = {};
+	SECURITY.forEach(function(s) { o[s[0]] = s[1]; });
+	if (current && !o[current]) o[current] = current;
+	return o;
+}
+
+function enableRadio(radio) {
+	if (uci.get('wireless', radio, 'disabled') == '1')
+		uci.unset('wireless', radio, 'disabled');
 }
 
 function bandName(radio) {
@@ -37,8 +56,9 @@ function bandName(radio) {
 }
 
 function proxiedDevices() {
-	var v = uci.get('xraypanel', 'main', 'lan_ifaces');
-	return L.toArray(v);
+	var v = L.toArray(uci.get('xraypanel', 'main', 'lan_ifaces'));
+	// Same default as firewall.sh: an empty list means br-lan.
+	return v.length ? v : [ 'br-lan' ];
 }
 
 // LAN-side interfaces a Wi-Fi network can join, with whether each goes through Xray.
@@ -80,12 +100,15 @@ function groups() {
 	return list;
 }
 
-function freeSubnet() {
+// usedAddrs: addresses in use right now (including a DHCP WAN), from network.getNetworks().
+function freeSubnet(usedAddrs) {
 	var used = {};
-	uci.sections('network', 'interface').forEach(function(s) {
-		var m = String(s.ipaddr || '').match(/^192\.168\.(\d+)\./);
+	var mark = function(a) {
+		var m = String(a || '').match(/^192\.168\.(\d+)\./);
 		if (m) used[m[1]] = true;
-	});
+	};
+	uci.sections('network', 'interface').forEach(function(s) { L.toArray(s.ipaddr).forEach(mark); });
+	(usedAddrs || []).forEach(mark);
 	for (var i = 2; i < 250; i++)
 		if (!used[i]) return i;
 	return null;
@@ -93,7 +116,16 @@ function freeSubnet() {
 
 return view.extend({
 	load: function() {
-		return uci.load([ 'wireless', 'network', 'firewall', 'dhcp', 'xraypanel' ]);
+		var self = this;
+		return Promise.all([
+			uci.load([ 'wireless', 'network', 'firewall', 'dhcp', 'xraypanel' ]),
+			L.resolveDefault(network.getNetworks(), []).then(function(nets) {
+				self.usedAddrs = [];
+				nets.forEach(function(n) {
+					L.toArray(n.getIPAddrs()).forEach(function(a) { self.usedAddrs.push(String(a).split('/')[0]); });
+				});
+			})
+		]);
 	},
 
 	// Client counts are slow to read (about a second per radio), so they fill in after the page shows.
@@ -112,7 +144,8 @@ return view.extend({
 
 	// Creates a separate network that never goes through Xray: bridge, subnet, DHCP and a firewall zone to WAN.
 	createDirect: function() {
-		var n = freeSubnet();
+		var n = freeSubnet(this.usedAddrs);
+		if (n == null) return null;
 		var name = uci.get('network', 'direct') ? 'direct' + n : 'direct';
 		var dev = 'br-' + name;
 
@@ -162,11 +195,14 @@ return view.extend({
 			if (new Blob([ v ]).size > 32) return _('Too long (32 bytes max)');
 			return true;
 		} });
-		var sec = new ui.Select(g.encryption, SECURITY.reduce(function(o, s) { o[s[0]] = s[1]; return o; }, {}), { sort: false });
+		var sec = new ui.Select(g.encryption, securityChoices(g.encryption), { sort: false });
 		var key = new ui.Textfield(g.key, { password: true, placeholder: _('At least 8 characters'), validate: function(v) {
-			if (sec.getValue() == 'none') return true;
+			if (sec.getValue() == 'none' || sec.getValue() == 'owe') return true;
 			v = v || '';
-			if (v.length < 8 || v.length > 63) return _('8 to 63 characters');
+			// A passphrase is 8-63 bytes; a raw key is exactly 64 hex digits.
+			if (/^[0-9a-fA-F]{64}$/.test(v)) return true;
+			var n = new Blob([ v ]).size;
+			if (n < 8 || n > 63) return _('8 to 63 characters, or a 64-digit hex key');
 			return true;
 		} });
 		var bands = radios.map(function(r) {
@@ -179,9 +215,9 @@ return view.extend({
 		var routeOpts = rts.map(function(r) {
 			return E('label', { 'class': 'xn-route' }, [
 				E('input', { 'type': 'radio', 'name': 'xn-route', 'value': r.name, 'checked': r.name == g.network ? '' : null }),
-				' ', E('strong', {}, r.name), ' ',
+				' ', E('strong', {}, text(r.name)), ' ',
 				r.proxied ? pill('#2e7d32', _('Through Xray')) : pill('#1976d2', _('Direct')),
-				' ', E('span', { 'class': 'xn-muted' }, r.addr)
+				' ', E('span', { 'class': 'xn-muted' }, text(r.addr))
 			]);
 		});
 		var hasDirect = rts.some(function(r) { return !r.proxied; });
@@ -201,7 +237,7 @@ return view.extend({
 				E('div', { 'class': 'cbi-value-title' }, _('Internet route')),
 				E('div', {}, routeOpts)
 			]),
-			E('p', { 'class': 'xn-muted' }, _('Devices on a "Through Xray" network use the proxy rules. Devices on a "Direct" network never touch Xray.')),
+			E('p', { 'class': 'xn-muted' }, _('Devices on a "Through Xray" network use the proxy rules. Traffic from a "Direct" network goes straight to the internet; only its DNS lookups are answered by the router through Xray, so they are not poisoned.')),
 			E('div', { 'class': 'right' }, [
 				E('button', { 'class': 'cbi-button', 'click': ui.hideModal }, _('Cancel')), ' ',
 				E('button', { 'class': 'cbi-button cbi-button-positive', 'click': function() {
@@ -212,7 +248,13 @@ return view.extend({
 					if (!picked.length) { ui.addNotification(null, E('p', _('Pick at least one band')), 'warning'); return; }
 					var r = body.querySelector('input[name=xn-route]:checked');
 					var net = r ? r.value : g.network;
-					if (net == '__new_direct') net = self.createDirect();
+					if (net == '__new_direct') {
+						net = self.createDirect();
+						if (!net) {
+							ui.addNotification(null, E('p', _('No free 192.168.x.0/24 subnet left for a new network.')), 'error');
+							return;
+						}
+					}
 					self.save(g, {
 						ssid: ssid.getValue(), encryption: sec.getValue(),
 						key: sec.getValue() == 'none' ? '' : key.getValue(),
@@ -246,6 +288,8 @@ return view.extend({
 			uci.set('wireless', sid, 'encryption', v.encryption);
 			uci.set('wireless', sid, 'key', v.key || null);
 			if (g.disabled) uci.set('wireless', sid, 'disabled', '1');
+			// A fresh OpenWrt ships with the radios themselves turned off.
+			else enableRadio(r);
 		});
 
 		ui.hideModal();
@@ -256,13 +300,14 @@ return view.extend({
 		g.sids.forEach(function(sid) {
 			uci.set('wireless', sid, 'disabled', g.disabled ? null : '1');
 		});
+		if (g.disabled) g.radios.forEach(enableRadio);
 		return this.commit();
 	},
 
 	remove: function(g) {
 		var self = this;
 		ui.showModal(_('Delete Wi-Fi network'), [
-			E('p', _('Delete "%s"? Devices connected to it will be disconnected.').format(g.ssid)),
+			E('p', text(_('Delete "%s"? Devices connected to it will be disconnected.').format(g.ssid))),
 			E('div', { 'class': 'right' }, [
 				E('button', { 'class': 'cbi-button', 'click': ui.hideModal }, _('Cancel')), ' ',
 				E('button', { 'class': 'cbi-button cbi-button-negative', 'click': function() {
@@ -285,7 +330,7 @@ return view.extend({
 			ui.changes.init();
 			ui.addNotification(null, E('p', _('Saved. Press "Save & Apply" below to put it live. Wi-Fi restarts for a few seconds.')), 'info');
 		}).catch(function(e) {
-			ui.addNotification(null, E('p', e.message), 'error');
+			ui.addNotification(null, E('p', text(e.message)), 'error');
 		});
 	},
 
@@ -307,11 +352,11 @@ return view.extend({
 			g.sids.forEach(function(sid) { n += clients[sid] || 0; });
 
 			return E('tr', { 'style': g.disabled ? 'opacity:.55' : '' }, [
-				E('td', {}, [ E('div', { 'class': 'xn-ssid' }, g.ssid),
+				E('td', {}, [ E('div', { 'class': 'xn-ssid' }, text(g.ssid)),
 					E('div', { 'class': 'xn-muted', 'style': 'font-size:.85em' },
-						(SECURITY.filter(function(s) { return s[0] == g.encryption; })[0] || [ 0, g.encryption ])[1]) ]),
-				E('td', {}, g.radios.map(bandName).join(' + ')),
-				E('td', {}, [ route, ' ', E('span', { 'class': 'xn-muted' }, g.network) ]),
+						text(securityChoices(g.encryption)[g.encryption])) ]),
+				E('td', {}, text(g.radios.map(bandName).join(' + '))),
+				E('td', {}, [ route, ' ', E('span', { 'class': 'xn-muted' }, text(g.network)) ]),
 				E('td', {}, g.disabled ? E('span', { 'class': 'xn-muted' }, _('off'))
 					: self.clientsLoaded ? String(n) : E('span', { 'class': 'xn-muted' }, '…')),
 				E('td', { 'class': 'right', 'style': 'white-space:nowrap' }, [

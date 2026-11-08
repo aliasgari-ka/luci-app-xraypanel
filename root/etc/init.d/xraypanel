@@ -117,8 +117,10 @@ start_service() {
 
 	if build_config; then
 		mv "$NEXT" "$XP_CONF"
-	elif [ -s "$XP_CONF" ] && xp_running; then
-		# Keep the last working config running instead of cutting the proxy.
+	elif [ -s "$XP_CONF" ]; then
+		# Keep using the last working config instead of cutting the proxy. It only exists if it
+		# passed the test, and geoupdate tests new geo files against it, so it is still valid.
+		# (Not tied to Xray running: "restart" stops Xray before this runs.)
 		echo "Xray keeps running with the previous working settings until this is fixed." >> "$XP_RUN/error"
 	else
 		$FW stop

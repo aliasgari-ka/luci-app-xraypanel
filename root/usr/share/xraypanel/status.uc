@@ -55,8 +55,12 @@ if (pid) {
 let used = {}, target = null;
 for (let ob in (conf?.outbounds ?? []))
 	if (substr(ob.tag ?? '', 0, 5) == 'node-') used[substr(ob.tag, 5)] = true;
+// gen.uc's own socks-in rule carries the proxy target; Xray uses the first match.
 for (let r in (conf?.routing?.rules ?? []))
-	if (r.inboundTag?.[0] == 'socks-in') target = r.outboundTag ?? 'balancer';
+	if (r.inboundTag?.[0] == 'socks-in') {
+		target = r.outboundTag ?? 'balancer';
+		break;
+	}
 
 let nodes = 0;
 let servers = [];

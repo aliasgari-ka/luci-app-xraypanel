@@ -244,7 +244,8 @@ function parse_ss(link) {
 	let at = rindex(body, '@');
 	if (at >= 0) {
 		let user = substr(body, 0, at);
-		let dec = b64(user);
+		// Some apps percent-encode the base64 padding (%3D).
+		let dec = b64(urldec(user));
 		cred = (dec != null && index(dec, ':') > 0) ? dec : urldec(user);
 		hp = split_hostport(substr(body, at + 1));
 	}
@@ -308,8 +309,9 @@ function rule(fields, target) {
 function is_ipv4(v) {
 	let m = match(v, /^([0-9]+)[.]([0-9]+)[.]([0-9]+)[.]([0-9]+)(\/([0-9]+))?$/);
 	if (!m) return false;
+	// Xray rejects octets with a leading zero (010.0.0.1).
 	for (let i = 1; i <= 4; i++)
-		if (int(m[i]) > 255) return false;
+		if (int(m[i]) > 255 || (length(m[i]) > 1 && substr(m[i], 0, 1) == '0')) return false;
 	return m[6] == null || int(m[6]) <= 32;
 }
 
@@ -441,6 +443,8 @@ function entries(vals, kind, label) {
 }
 
 function portspec(v, what, label) {
+	// "1000 - 2000" is one range, not three entries.
+	v = replace(join(',', type(v) == 'array' ? v : [ v ?? '' ]), / *- */g, '-');
 	v = join(',', list(v));
 	if (v == '') return null;
 	if (valid_ports(v)) return v;
@@ -504,8 +508,14 @@ uci.foreach('xraypanel', 'rule', (s) => {
 	if (index([ 'tcp', 'udp', 'tcp,udp' ], s.network) >= 0) f.network = s.network;
 	const proto = filter(list(s.protocol), p => index([ 'http', 'tls', 'quic', 'bittorrent' ], p) >= 0);
 	if (length(proto)) f.protocol = proto;
-	const inb = filter(list(s.inbound), p => index([ 'redir-in', 'socks-in' ], p) >= 0);
+	// socks-in is the router's own port (watchdog, geo updates); it always uses the proxy rule above.
+	const inb = filter(list(s.inbound), p => p == 'redir-in');
 	if (length(inb)) f.inboundTag = inb;
+	else if (length(list(s.inbound))) {
+		// Dropping the inbound would widen the rule to all LAN traffic, so skip it instead.
+		push(warnings, `Rule "${label}" only applies to the router's own SOCKS port, which rules cannot route; ignored`);
+		return;
+	}
 	let attrs = {};
 	for (let a in (type(s.attrs) == 'array' ? s.attrs : (s.attrs ? [ s.attrs ] : []))) {
 		const i = index(a, '=');
@@ -538,13 +548,13 @@ if (target.balancerTag) {
 		strategy: { type: strategy },
 		fallbackTag: nodes[0].tag
 	} ];
-	if (strategy == 'leastPing')
-		observatory = {
-			subjectSelector: [ 'node-' ],
-			probeUrl: probe_url,
-			probeInterval: `${int(opt(main.probe_interval, 60))}s`,
-			enableConcurrency: true
-		};
+	// Xray needs the observatory for every strategy once fallbackTag is set.
+	observatory = {
+		subjectSelector: [ 'node-' ],
+		probeUrl: probe_url,
+		probeInterval: `${int(opt(main.probe_interval, 60))}s`,
+		enableConcurrency: true
+	};
 }
 
 const cfg = clean({

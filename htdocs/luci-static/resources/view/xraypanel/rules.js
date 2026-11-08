@@ -6,9 +6,9 @@
 // Laid out like the routing tab of 3x-ui: a "Basic" block of common
 // direct/block lists, then an ordered table of full Xray routing rules.
 
+// The router's own SOCKS port is not offered: it always uses the proxy (watchdog, geo updates).
 var INBOUNDS = {
-	'redir-in': _('LAN (redirected traffic)'),
-	'socks-in': _('Router SOCKS (127.0.0.1:10808)')
+	'redir-in': _('LAN (redirected traffic)')
 };
 
 function vals(section_id, opt) {
@@ -33,7 +33,8 @@ var IP_TYPES = /^(geoip|ext-ip):/;
 function validIPv4(v) {
 	var m = v.match(/^(\d+)\.(\d+)\.(\d+)\.(\d+)(\/(\d+))?$/);
 	if (!m) return false;
-	for (var i = 1; i <= 4; i++) if (+m[i] > 255) return false;
+	// Xray rejects octets with a leading zero (010.0.0.1).
+	for (var i = 1; i <= 4; i++) if (+m[i] > 255 || /^0\d/.test(m[i])) return false;
 	return m[6] == null || +m[6] <= 32;
 }
 

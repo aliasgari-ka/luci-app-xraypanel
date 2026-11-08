@@ -82,7 +82,8 @@ function checkLink(value) {
 		catch (e) { return _('Not valid JSON'); }
 		return (ob && typeof ob == 'object' && ob.protocol) ? true : _('A JSON outbound needs a "protocol" field');
 	}
-	var m = value.match(/^(vmess|vless|trojan|ss):\/\/(\S+)$/i);
+	// Links copied from chat apps often have raw spaces in the #name; only the part before # must be space-free.
+	var m = value.match(/^(vmess|vless|trojan|ss):\/\/([^\s#]+)(#.*)?$/i);
 	if (!m)
 		return _('Supported: vmess://, vless://, trojan://, ss:// or a JSON outbound');
 	var proto = m[1].toLowerCase(), body = m[2].replace(/#.*$/, '');
@@ -126,10 +127,11 @@ function nodeName() {
 }
 
 // The import box takes one link per line, or a single JSON outbound (which may span lines).
+// Returns [ line number as typed, text ] pairs, so errors point at the right line.
 function importLines(value) {
 	value = (value || '').trim();
-	if (value.charAt(0) == '{') return [ value ];
-	return value.split(/\r?\n/).map(function(l) { return l.trim(); }).filter(function(l) { return l; });
+	if (value.charAt(0) == '{') return [ [ 1, value ] ];
+	return value.split(/\r?\n/).map(function(l, i) { return [ i + 1, l.trim() ]; }).filter(function(l) { return l[1]; });
 }
 
 return view.extend({
@@ -188,7 +190,7 @@ return view.extend({
 		o.datatype = 'range(10,3600)';
 		o.default = '60';
 		o.placeholder = '60';
-		o.depends({ mode: 'balance', strategy: 'leastPing' });
+		o.depends('mode', 'balance');
 
 		o = s.option(form.TextValue, '_import', _('Add servers from links'),
 			_('Paste one or more share links, one per line (or one JSON outbound), then press Save & Apply. Links that are already in the list are skipped.'));
@@ -198,15 +200,16 @@ return view.extend({
 		o.validate = function(section_id, value) {
 			var lines = importLines(value);
 			for (var i = 0; i < lines.length; i++) {
-				var r = checkLink(lines[i]);
-				if (r !== true) return _('Line %d: %s').format(i + 1, r);
+				var r = checkLink(lines[i][1]);
+				if (r !== true) return _('Line %d: %s').format(lines[i][0], r);
 			}
 			return true;
 		};
 		o.write = function(section_id, value) {
 			var seen = {};
 			uci.sections('xraypanel', 'node').forEach(function(n) { seen[(n.link || '').trim()] = true; });
-			importLines(value).forEach(function(l) {
+			importLines(value).forEach(function(e) {
+				var l = e[1];
 				// Pasting the same link twice should not create a second server.
 				if (seen[l]) return;
 				seen[l] = true;

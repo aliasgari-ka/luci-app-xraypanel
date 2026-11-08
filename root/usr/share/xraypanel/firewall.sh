@@ -147,10 +147,12 @@ stop() {
 
 # Only redirected connections may reach the redirect port; a direct one would make Xray dial itself.
 guard() {
+	# inet, because Xray listens on IPv6 too (:::port).
+	nft delete table ip $GUARD 2>/dev/null
 	nft -f - <<EOF
-table ip $GUARD
-delete table ip $GUARD
-table ip $GUARD {
+table inet $GUARD
+delete table inet $GUARD
+table inet $GUARD {
 	chain input {
 		type filter hook input priority filter - 5; policy accept;
 		tcp dport $XP_PORT_REDIR ct status dnat accept
@@ -161,6 +163,7 @@ EOF
 }
 
 unguard() {
+	nft delete table inet $GUARD 2>/dev/null
 	nft delete table ip $GUARD 2>/dev/null
 	return 0
 }
