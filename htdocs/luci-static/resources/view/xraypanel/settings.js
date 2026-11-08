@@ -26,11 +26,19 @@ return view.extend({
 			_('Only clients on these network devices go through Xray (usually br-lan). Leave other networks (for example a direct-only Wi-Fi) out. If none is chosen, br-lan is used.'));
 		o.multiple = true;
 		o.noaliases = true;
-		o.nocreate = true;
+		// No nocreate: entries that are not a current device (a network name like "lan", or an
+		// interface that is down) must survive a save instead of being dropped.
 
 		o = s.option(form.DynamicList, 'bypass_src', _('Devices that stay direct'),
 			_('IP addresses or ranges that never go through Xray.'));
-		o.datatype = 'ipmask4';
+		// firewall.sh only reads a.b.c.d or a.b.c.d/N, not a.b.c.d/255.255.255.0.
+		o.validate = function(section_id, v) {
+			if (!v) return true;
+			var m = v.match(/^(\d+)\.(\d+)\.(\d+)\.(\d+)(\/(\d+))?$/);
+			var ok = m && [ 1, 2, 3, 4 ].every(function(i) { return +m[i] <= 255 && !/^0\d/.test(m[i]); }) &&
+				(m[6] == null || +m[6] <= 32);
+			return ok ? true : _('Use an address like 192.168.1.50 or a range like 192.168.1.0/24');
+		};
 
 		o = s.option(form.Flag, 'block_quic', _('Block QUIC'),
 			_('Rejects UDP 443 so apps fall back to TCP, which Xray can carry. Recommended.'));

@@ -94,7 +94,8 @@ var STRATEGY = {
 return view.extend({
 	load: function() {
 		return Promise.all([
-			L.resolveDefault(fs.exec_direct('/usr/share/xraypanel/status.sh', [], 'json'), {}),
+			// null (not {}) on failure, so a failed call is not shown as "Xray is off".
+			L.resolveDefault(fs.exec_direct('/usr/share/xraypanel/status.sh', [], 'json'), null),
 			L.resolveDefault(fs.exec_direct('/sbin/logread', [ '-l', '400', '-e', 'xray' ]), '')
 		]);
 	},
@@ -128,7 +129,12 @@ return view.extend({
 		var cls, title, sub;
 		var ms = st.last_ok ? Math.round(parseFloat(st.latency || 0) * 1000) : null;
 
-		if (!st.enabled) {
+		if (st.unavailable) {
+			cls = 'off';
+			title = _('Status unavailable');
+			sub = _('The router did not answer the status request. It is retried every few seconds.');
+		}
+		else if (!st.enabled) {
 			cls = 'off';
 			title = _('Xray is off');
 			sub = _('LAN traffic goes direct. Turn on "Enable Xray" on the Servers page.');
@@ -234,6 +240,7 @@ return view.extend({
 
 			var state;
 			if (!s.enabled) state = pill('#90a4ae', _('Off'));
+			else if (s.active === false) state = pill('#c62828', _('Skipped'));
 			else if (inUse[s.name]) state = pill('#2e7d32', _('In use'));
 			else if (t && !t.ok) state = pill('#c62828', _('Down'));
 			else state = pill('#1976d2', _('Ready'));
@@ -264,7 +271,7 @@ return view.extend({
 	},
 
 	update: function(d) {
-		var st = d[0] || {};
+		var st = d[0] || { unavailable: true };
 		dom.content(this.heroBox, this.renderHero(st));
 		dom.content(this.alertBox, this.renderAlerts(st));
 		dom.content(this.cardBox, this.renderCards(st));

@@ -24,6 +24,12 @@ if [ "${code:-0}" -ge 200 ] 2>/dev/null && [ "$code" -lt 400 ]; then
 	echo 0 > "$XP_RUN/fails"
 	echo "${res#* }" > "$XP_RUN/latency"
 	date +%s > "$XP_RUN/last_ok"
+	# The probe can take 10 s; Xray may have been turned off or stopped meanwhile. The init
+	# script waits for this lock before it removes the redirect, so this check is final.
+	if ! xp_enabled || ! xp_running; then
+		[ -f "$XP_RUN/active" ] && $FW stop
+		exit 0
+	fi
 	# Also re-applies the rules if something (for example a firewall restart) removed them.
 	if [ ! -f "$XP_RUN/active" ] || ! $FW check; then
 		$FW start

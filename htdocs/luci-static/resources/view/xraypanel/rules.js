@@ -3,8 +3,7 @@
 'require form';
 'require uci';
 
-// Laid out like the routing tab of 3x-ui: a "Basic" block of common
-// direct/block lists, then an ordered table of full Xray routing rules.
+// Laid out like the routing tab of 3x-ui: an ordered table of full Xray routing rules.
 
 // The router's own SOCKS port is not offered: it always uses the proxy (watchdog, geo updates).
 var INBOUNDS = {
@@ -27,8 +26,8 @@ function cell(parts) {
 	return out.length ? E('span', {}, out) : E('span', { 'style': 'opacity:.4' }, '-');
 }
 
-var DOMAIN_TYPES = /^(geosite|domain|full|keyword|regexp|ext|dotless):/;
-var IP_TYPES = /^(geoip|ext-ip):/;
+var DOMAIN_TYPES = /^(geosite|domain|full|keyword|regexp|ext|dotless):.+/;
+var IP_TYPES = /^(geoip|ext-ip):.+/;
 
 function validIPv4(v) {
 	var m = v.match(/^(\d+)\.(\d+)\.(\d+)\.(\d+)(\/(\d+))?$/);
@@ -38,9 +37,14 @@ function validIPv4(v) {
 	return m[6] == null || +m[6] <= 32;
 }
 
+// Same reading as gen.uc portspec(): "1000 - 2000" is one range, spaces and commas separate.
+function splitPorts(v) {
+	return String(v).replace(/ *- */g, '-').trim().split(/[ ,]+/).filter(function(p) { return p != ''; });
+}
+
 function validPorts(v) {
 	if (!v) return true;
-	var ok = String(v).replace(/\s+/g, '').split(',').every(function(p) {
+	var ok = splitPorts(v).every(function(p) {
 		var r = p.match(/^(\d+)(-(\d+))?$/);
 		if (!r) return false;
 		var a = +r[1], b = r[3] != null ? +r[3] : a;
@@ -49,17 +53,29 @@ function validPorts(v) {
 	return ok ? true : _('Use ports 1-65535, ranges and commas, like 80,443,1000-2000');
 }
 
+function isIPv6(v) {
+	return /^[0-9a-f]*:[0-9a-f:.]+(\/\d+)?$/i.test(v);
+}
+
 function checkDomain(section_id, v) {
 	if (!v) return true;
-	if (/^[a-z-]+:/i.test(v) && !DOMAIN_TYPES.test(v))
-		return _('Unknown prefix. Use geosite:, domain:, full:, keyword:, regexp: or ext:');
+	if (/^[a-z-]+:/i.test(v) && !isIPv6(v))
+		return DOMAIN_TYPES.test(v) ? true : _('Use geosite:, domain:, full:, keyword:, regexp: or ext: followed by a value');
+	if (/^[0-9.\/]+$/.test(v) || isIPv6(v))
+		return _('This is an IP address; put it in the IP field');
 	return true;
 }
 
 function checkIP(section_id, v) {
 	if (!v) return true;
-	if (IP_TYPES.test(v) || validIPv4(v) || /^[0-9a-f]*:[0-9a-f:]+(\/\d+)?$/i.test(v)) return true;
+	if (IP_TYPES.test(v) || validIPv4(v) || isIPv6(v)) return true;
 	return _('Use geoip:xx or an address like 1.2.3.4 or 10.0.0.0/8');
+}
+
+// LAN devices: IPv4 address or a /N range only (gen.uc does not read a.b.c.d/255.255.255.0).
+function checkSource(section_id, v) {
+	if (!v) return true;
+	return validIPv4(v) ? true : _('Use an address like 192.168.1.50 or a range like 192.168.1.0/24');
 }
 
 // Rules saved before this page existed keep everything in one "match" list.
@@ -70,24 +86,63 @@ function legacy(section_id) {
 		else if (/^(geoip|ext-ip):/.test(v) || /^[0-9.]+(\/[0-9]+)?$/.test(v) || /^[0-9a-f]*:[0-9a-f:]+(\/[0-9]+)?$/i.test(v)) ip.push(v);
 		else d.push(v);
 	});
-	return { domain: d, ip: ip, port: port };
+	return { domain: d, ip: ip, port: port.filter(function(p) { return validPorts(p) === true; }) };
 }
+
+// Lists that older versions kept on the main section, shown as normal rules now.
+var BASIC = [
+	[ 'block_ip', 'ip', 'block', _('Blocked IPs') ],
+	[ 'block_domain', 'domain', 'block', _('Blocked domains') ],
+	[ 'direct_ip', 'ip', 'direct', _('Direct IPs') ],
+	[ 'direct_domain', 'domain', 'direct', _('Direct domains') ]
+];
 
 return view.extend({
 	load: function() {
 		return uci.load('xraypanel');
 	},
 
-	// Moves rules saved with the old single "match" list into the separate fields.
-	// The change is staged, so it only takes effect with Save & Apply.
+	// Brings older settings into the rule table. The changes are staged, so they only take
+	// effect with Save & Apply, and the router keeps routing the same way meanwhile.
 	migrate: function() {
+		// Old rules kept everything in one "match" list, where any entry matched (OR).
+		// Fields of a rule must all match (AND), so each kind becomes its own rule.
 		uci.sections('xraypanel', 'rule').forEach(function(r) {
 			if (r.match == null || r.domain != null || r.ip != null || r.port != null) return;
 			var lg = legacy(r['.name']);
-			if (lg.domain.length) uci.set('xraypanel', r['.name'], 'domain', lg.domain);
-			if (lg.ip.length) uci.set('xraypanel', r['.name'], 'ip', lg.ip);
-			if (lg.port.length) uci.set('xraypanel', r['.name'], 'port', lg.port.join(','));
+			var parts = [];
+			if (lg.domain.length) parts.push([ 'domain', lg.domain ]);
+			if (lg.ip.length) parts.push([ 'ip', lg.ip ]);
+			if (lg.port.length) parts.push([ 'port', lg.port.join(',') ]);
 			uci.unset('xraypanel', r['.name'], 'match');
+			if (!parts.length) return;
+			uci.set('xraypanel', r['.name'], parts[0][0], parts[0][1]);
+			var after = r['.name'];
+			parts.slice(1).forEach(function(p) {
+				var sid = uci.add('xraypanel', 'rule');
+				[ 'label', 'enabled', 'outbound' ].forEach(function(k) {
+					if (r[k] != null) uci.set('xraypanel', sid, k, r[k]);
+				});
+				uci.set('xraypanel', sid, p[0], p[1]);
+				uci.move('xraypanel', sid, after, true);
+				after = sid;
+			});
+		});
+
+		// Blocked/direct lists on the main section become the first rules, in the same order
+		// gen.uc used to apply them.
+		var first = (uci.sections('xraypanel', 'rule')[0] || {})['.name'];
+		BASIC.forEach(function(b) {
+			var v = L.toArray(uci.get('xraypanel', 'main', b[0]));
+			if (uci.get('xraypanel', 'main', b[0]) == null) return;
+			uci.unset('xraypanel', 'main', b[0]);
+			if (!v.length) return;
+			var sid = uci.add('xraypanel', 'rule');
+			uci.set('xraypanel', sid, 'label', b[3]);
+			uci.set('xraypanel', sid, 'enabled', '1');
+			uci.set('xraypanel', sid, b[1], v);
+			uci.set('xraypanel', sid, 'outbound', b[2]);
+			if (first) uci.move('xraypanel', sid, first, false);
 		});
 	},
 
@@ -100,38 +155,14 @@ return view.extend({
 		m = new form.Map('xraypanel', _('Routing'),
 			_('Domain entries are checked against the site name first; IP entries only apply once no domain entry matched.'));
 
-		/* Basic */
-
-		s = m.section(form.NamedSection, 'main', 'main', _('Basic'),
-			_('Common lists, checked before the rules below. Pick from the list or type your own entry.'));
+		s = m.section(form.NamedSection, 'main', 'main');
 		s.addremove = false;
 
 		o = s.option(form.ListValue, 'default_out', _('Default route'),
-			_('Where traffic goes when nothing matches.'));
+			_('Where traffic goes when no rule matches.'));
 		o.value('proxy', _('Proxy'));
 		o.value('direct', _('Direct'));
 		o.default = 'proxy';
-
-		o = s.option(form.DynamicList, 'block_ip', _('Blocked IPs'));
-		o.value('geoip:private', _('Private networks'));
-		o.value('geoip:ir', _('Iran'));
-		o.validate = checkIP;
-
-		o = s.option(form.DynamicList, 'block_domain', _('Blocked domains'));
-		o.value('geosite:ads', _('Ads'));
-		o.value('geosite:category-ads-all', _('Ads (full geosite only)'));
-		o.validate = checkDomain;
-
-		o = s.option(form.DynamicList, 'direct_ip', _('Direct IPs'));
-		o.value('geoip:private', _('Private networks'));
-		o.value('geoip:ir', _('Iran'));
-		o.validate = checkIP;
-
-		o = s.option(form.DynamicList, 'direct_domain', _('Direct domains'));
-		o.value('geosite:ir', _('Iran (sites, banks, apps)'));
-		o.value('domain:ir', _('All .ir domains'));
-		o.value('geosite:category-ir', _('Iranian services'));
-		o.validate = checkDomain;
 
 		/* Rules */
 
@@ -166,6 +197,7 @@ return view.extend({
 		o.value('geosite:category-ir', 'geosite:category-ir');
 		o.value('geosite:ads', 'geosite:ads');
 		o.value('domain:ir', 'domain:ir');
+		o.value('geosite:category-ads-all', 'geosite:category-ads-all (full geosite only)');
 		o.validate = checkDomain;
 
 		o = s.taboption('dest', form.DynamicList, 'ip', _('IP'),
@@ -183,7 +215,7 @@ return view.extend({
 		o = s.taboption('source', form.DynamicList, 'source', _('Source IP'),
 			_('A device or range on your LAN, for example 192.168.1.50 or 192.168.1.0/24'));
 		o.modalonly = true;
-		o.datatype = 'ipmask4';
+		o.validate = checkSource;
 
 		o = s.taboption('source', form.Value, 'source_port', _('Source port'));
 		o.modalonly = true;
@@ -197,17 +229,15 @@ return view.extend({
 
 		o = s.taboption('other', form.ListValue, 'network', _('Network'));
 		o.modalonly = true;
+		// LAN UDP is not redirected to Xray, so only TCP ever reaches these rules.
 		o.value('', _('Any'));
 		o.value('tcp', 'TCP');
-		o.value('udp', 'UDP');
-		o.value('tcp,udp', 'TCP,UDP');
 
 		o = s.taboption('other', form.MultiValue, 'protocol', _('Protocol'),
 			_('Detected by sniffing.'));
 		o.modalonly = true;
 		o.value('http', 'HTTP');
 		o.value('tls', 'TLS');
-		o.value('quic', 'QUIC');
 		o.value('bittorrent', 'BitTorrent');
 
 		o = s.taboption('other', form.DynamicList, 'attrs', _('Attributes'),

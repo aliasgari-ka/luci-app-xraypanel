@@ -31,6 +31,13 @@ cron_update() {
 	rm -f "$tmp"
 }
 
+# Runs firewall.sh while holding the watchdog's lock, so a watchdog run that is still
+# probing cannot put the redirect back right after it was removed.
+fw() {
+	mkdir -p "$XP_RUN"
+	flock "$XP_RUN/lock" "$FW" "$@"
+}
+
 fail() {
 	echo "$1" > "$XP_RUN/error"
 	logger -t xraypanel "$1"
@@ -108,8 +115,8 @@ start_service() {
 
 	if [ "$enabled" != 1 ]; then
 		cron_update off
-		$FW stop
-		$FW unguard
+		fw stop
+		fw unguard
 		return 0
 	fi
 
@@ -123,11 +130,11 @@ start_service() {
 		# (Not tied to Xray running: "restart" stops Xray before this runs.)
 		echo "Xray keeps running with the previous working settings until this is fixed." >> "$XP_RUN/error"
 	else
-		$FW stop
+		fw stop
 		return 1
 	fi
 
-	$FW guard
+	fw guard
 
 	procd_open_instance xray
 	procd_set_param command /usr/bin/xray run -c "$XP_CONF"
@@ -141,7 +148,7 @@ start_service() {
 
 	if [ -f "$XP_RUN/active" ]; then
 		# Apply changed interface, bypass, QUIC or DNS settings right away.
-		$FW start
+		fw start
 	else
 		# First proxy check shortly after Xray is up, instead of waiting for cron.
 		( sleep 4; $XP_DIR/watchdog.sh ) >/dev/null 2>&1 &
@@ -149,8 +156,8 @@ start_service() {
 }
 
 stop_service() {
-	$FW stop
-	$FW unguard
+	fw stop
+	fw unguard
 }
 
 service_triggers() {

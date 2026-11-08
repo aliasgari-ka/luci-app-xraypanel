@@ -73,6 +73,21 @@ function validHostPort(s) {
 }
 
 // Catches the mistakes gen.uc would reject, so they show up before Save & Apply.
+// Same transports and security modes gen.uc stream() accepts.
+function checkStream(net, security, pbk) {
+	net = String(net || 'tcp').toLowerCase();
+	security = String(security || 'none').toLowerCase();
+	if (net == 'h2' || net == 'http')
+		return _('The HTTP/2 (h2) transport was removed in Xray 26; ask for an xhttp link instead');
+	if ([ 'tcp', 'raw', 'ws', 'grpc', 'httpupgrade', 'xhttp', 'splithttp', 'kcp' ].indexOf(net) < 0)
+		return _('Unsupported transport "%s"').format(net);
+	if ([ 'none', 'tls', 'xtls', 'reality' ].indexOf(security) < 0)
+		return _('Unsupported security "%s"').format(security);
+	if (security == 'reality' && !pbk)
+		return _('This REALITY link has no public key (pbk)');
+	return true;
+}
+
 function checkLink(value) {
 	value = (value || '').trim();
 	if (!value) return _('Paste a share link');
@@ -91,14 +106,24 @@ function checkLink(value) {
 		var j = vmessJson(value);
 		if (!j) return _('This vmess link cannot be decoded');
 		if (!j.add || !j.port || !j.id) return _('This vmess link has no address, port or id');
-		return true;
+		if (!/^\d+$/.test(String(j.port)) || +j.port < 1 || +j.port > 65535) return _('This vmess link has an invalid port');
+		return checkStream(j.net, j.tls == 'tls' || j.tls == 'reality' ? j.tls : 'none', j.pbk);
 	}
 	var qi = body.indexOf('?');
 	var q = new URLSearchParams(qi >= 0 ? body.substring(qi + 1) : '');
-	var hp = (qi >= 0 ? body.substring(0, qi) : body).replace(/\/+$/, '');
+	// A path after host:port (host:443/?type=ws) carries nothing; gen.uc drops it too.
+	var hp = (qi >= 0 ? body.substring(0, qi) : body).replace(/(@[^\/]*)\/.*$/, '$1').replace(/\/+$/, '');
 	var at = hp.lastIndexOf('@');
 	if (proto == 'ss') {
 		if (q.get('plugin')) return _('Shadowsocks plugins are not supported');
+		if (at >= 0) {
+			var user = hp.substring(0, at), cred;
+			try { cred = b64(decodeURIComponent(user)); } catch (e) { cred = null; }
+			if (!cred || cred.indexOf(':') <= 0) {
+				try { cred = decodeURIComponent(user); } catch (e) { cred = user; }
+			}
+			if (cred.indexOf(':') <= 0) return _('This shadowsocks link has no method:password');
+		}
 		if (at < 0) {
 			var dec = b64(hp);
 			at = dec ? dec.lastIndexOf('@') : -1;
@@ -111,9 +136,7 @@ function checkLink(value) {
 	}
 	if (!validHostPort(hp.substring(at + 1)))
 		return _('This link has no valid server address and port');
-	if (q.get('security') == 'reality' && !q.get('pbk'))
-		return _('This REALITY link has no public key (pbk)');
-	return true;
+	return checkStream(q.get('type'), q.get('security') || (proto == 'trojan' ? 'tls' : 'none'), q.get('pbk'));
 }
 
 // Anonymous UCI sections are renamed when a section above them is deleted, which would break

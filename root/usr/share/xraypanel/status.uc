@@ -87,7 +87,7 @@ if (!pid || !cache || cache.pid != pid || time() - (cache.at ?? 0) >= CACHE_SECO
 			cache.traffic[m[1]][m[2] == 'uplink' ? 'up' : 'down'] = +(st.value ?? 0);
 		}
 		if (target == 'balancer')
-			cache.balancer = sh('/usr/bin/xray api bi --server=127.0.0.1:10085 balancer 2>/dev/null');
+			cache.balancer = sh('/usr/bin/xray api bi -json --server=127.0.0.1:10085 balancer 2>/dev/null');
 	}
 	fs.writefile(CACHE, sprintf('%J', cache));
 }
@@ -111,10 +111,12 @@ for (let k in [ 'geoip', 'geosite' ]) {
 
 let in_use = [];
 if (target == 'balancer') {
-	for (let l in split(cache.balancer ?? '', '\n')) {
-		let m = match(l, /node-([A-Za-z0-9_]+)/);
-		if (m && index(lc(l), 'selected') >= 0) push(in_use, m[1]);
-	}
+	// { "balancer": { "override": {...}, "principleTarget": { "tag": [ "node-x" ] } } }
+	let bi = null;
+	try { bi = json(cache.balancer || 'null'); } catch (e) {}
+	const over = bi?.balancer?.override?.target;
+	for (let t in (over ? [ over ] : (bi?.balancer?.principleTarget?.tag ?? [])))
+		if (substr(t, 0, 5) == 'node-') push(in_use, substr(t, 5));
 }
 else if (target && substr(target, 0, 5) == 'node-') {
 	push(in_use, substr(target, 5));

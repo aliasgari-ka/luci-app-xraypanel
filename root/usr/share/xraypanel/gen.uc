@@ -18,6 +18,9 @@ const PORT_API = 10085;
 const PORT_TEST = 10900;
 const CHECK = '/var/etc/xraypanel/check.json';
 
+// Notes about the link being parsed (for example ignored options), added to the warnings.
+let link_notes = [];
+
 function opt(v, d) { return (v == null || v == '') ? d : v; }
 
 function on(v, d) {
@@ -110,12 +113,14 @@ function parse_url(link) {
 		u.query = parse_query(substr(rest, qi + 1));
 		rest = substr(rest, 0, qi);
 	}
-	rest = replace(rest, /\/+$/, '');
 	let at = rindex(rest, '@');
 	if (at >= 0) {
 		u.user = substr(rest, 0, at);
 		rest = substr(rest, at + 1);
 	}
+	// Some apps put a path after host:port (vless://id@host:443/?type=ws); it carries nothing.
+	let sl = index(rest, '/');
+	if (sl >= 0) rest = substr(rest, 0, sl);
 	let hp = split_hostport(rest);
 	if (!hp) return null;
 	u.host = hp.host;
@@ -126,7 +131,8 @@ function parse_url(link) {
 function stream(net, security, q) {
 	net = lc(opt(net, 'tcp'));
 	if (net == 'raw') net = 'tcp';
-	if (net == 'h2') net = 'http';
+	if (net == 'h2' || net == 'http')
+		die('the HTTP/2 (h2) transport was removed in Xray 26; ask for an xhttp link instead');
 	if (net == 'splithttp') net = 'xhttp';
 	security = lc(opt(security, 'none'));
 	if (security == 'xtls') security = 'tls';
@@ -134,13 +140,18 @@ function stream(net, security, q) {
 	const sni = opt(q.sni, opt(q.serverName, q.peer));
 	let ss = { network: net, security: security };
 
-	if (security == 'tls')
+	if (security == 'tls') {
 		ss.tlsSettings = {
 			serverName: opt(sni, q.host),
-			allowInsecure: on(q.allowInsecure, false) || on(q.insecure, false),
 			fingerprint: q.fp,
-			alpn: q.alpn ? split(q.alpn, ',') : null
+			alpn: q.alpn ? split(q.alpn, ',') : null,
+			// Xray 26 replaced allowInsecure with certificate pinning.
+			pinnedPeerCertSha256: q.pcs,
+			verifyPeerCertByName: q.vcn
 		};
+		if (!q.pcs && (on(q.allowInsecure, false) || on(q.insecure, false)))
+			push(link_notes, 'allowInsecure is not supported by Xray 26 and was ignored; the server certificate must be valid (or add pcs=<sha256> to the link)');
+	}
 	else if (security == 'reality') {
 		if (!q.pbk) die('REALITY link has no public key (pbk)');
 		ss.realitySettings = {
@@ -166,16 +177,19 @@ function stream(net, security, q) {
 		ss.wsSettings = { path: opt(q.path, '/'), host: q.host };
 		break;
 	case 'grpc':
-		ss.grpcSettings = { serviceName: opt(q.serviceName, q.path), multiMode: q.mode == 'multi' };
+		ss.grpcSettings = { serviceName: opt(q.serviceName, q.path), authority: q.authority, multiMode: q.mode == 'multi' };
 		break;
 	case 'httpupgrade':
 		ss.httpupgradeSettings = { path: opt(q.path, '/'), host: q.host };
 		break;
 	case 'xhttp':
 		ss.xhttpSettings = { path: opt(q.path, '/'), host: q.host, mode: opt(q.mode, 'auto') };
-		break;
-	case 'http':
-		ss.httpSettings = { path: opt(q.path, '/'), host: q.host ? split(q.host, ',') : null };
+		if (q.extra) {
+			let x = null;
+			try { x = json(q.extra); } catch (e) {}
+			if (type(x) == 'object') ss.xhttpSettings.extra = x;
+			else push(link_notes, 'the xhttp "extra" option is not valid JSON and was ignored');
+		}
 		break;
 	case 'kcp':
 		ss.kcpSettings = { header: { type: opt(q.headerType, 'none') }, seed: q.seed };
@@ -201,7 +215,9 @@ function parse_vmess(link) {
 		headerType: j.type, host: j.host, path: j.path, serviceName: j.path,
 		sni: j.sni, alpn: j.alpn, fp: j.fp,
 		allowInsecure: (j.allowInsecure != null) ? `${j.allowInsecure}` : ((j.insecure != null) ? `${j.insecure}` : null),
-		mode: j.mode, pbk: j.pbk, sid: j.sid, spx: j.spx
+		pcs: j.pcs, vcn: j.vcn,
+		// v2rayN puts the gRPC mode (gun/multi) in "type".
+		mode: opt(j.mode, (j.net == 'grpc') ? j.type : null), pbk: j.pbk, sid: j.sid, spx: j.spx
 	};
 	return {
 		protocol: 'vmess',
@@ -272,6 +288,10 @@ function parse_link(link) {
 		let ob;
 		try { ob = json(link); } catch (e) { die('custom outbound is not valid JSON'); }
 		if (type(ob) != 'object' || !ob.protocol) die('custom outbound needs a "protocol" field');
+		if (ob.streamSettings != null && type(ob.streamSettings) != 'object')
+			die('custom outbound: "streamSettings" must be an object');
+		if (ob.streamSettings?.sockopt != null && type(ob.streamSettings.sockopt) != 'object')
+			die('custom outbound: "streamSettings.sockopt" must be an object');
 		return ob;
 	}
 	let m = match(link, /^([a-zA-Z0-9]+):\/\//);
@@ -337,6 +357,7 @@ uci.foreach('xraypanel', 'node', (s) => {
 	if (!on(s.enabled, true) || !s.link) return;
 	const label = opt(s.label, s['.name']);
 	let ob;
+	link_notes = [];
 	try {
 		ob = parse_link(s.link);
 	}
@@ -344,6 +365,7 @@ uci.foreach('xraypanel', 'node', (s) => {
 		push(warnings, `Server "${label}" skipped: ${e.message}`);
 		return;
 	}
+	for (let n in link_notes) push(warnings, `Server "${label}": ${n}`);
 	ob.tag = 'node-' + s['.name'];
 	ob.streamSettings ??= {};
 	ob.streamSettings.sockopt ??= {};
@@ -372,6 +394,8 @@ for (let n in nodes) {
 	let st = n.settings ?? {};
 	for (let e in (st.vnext ?? [])) add_server(e.address);
 	for (let e in (st.servers ?? [])) add_server(e.address);
+	// Newer outbound JSON may put the address straight into settings.
+	if (type(st.address) == 'string') add_server(st.address);
 }
 
 let target;
@@ -389,7 +413,13 @@ else {
 	target = { balancerTag: 'balancer' };
 }
 
-const strategy = opt(main.strategy, 'leastPing');
+let strategy = opt(main.strategy, 'leastPing');
+if (index([ 'leastPing', 'roundRobin', 'random' ], strategy) < 0) {
+	push(warnings, `Balancing method "${strategy}" is not supported here; lowest latency is used`);
+	strategy = 'leastPing';
+}
+let probe_interval = int(opt(main.probe_interval, 60));
+if (!(probe_interval >= 10 && probe_interval <= 3600)) probe_interval = 60;
 const probe_url = opt(main.probe_url, 'https://www.gstatic.com/generate_204');
 const dns_on = on(main.dns_enabled, true);
 const dns_remote = opt(main.dns_remote, '1.1.1.1');
@@ -405,15 +435,32 @@ function outref(name, label) {
 }
 
 // Sorts one "match" entry into domain, ip or port. Returns null (with a warning) for bad entries.
+// A geosite:/geoip: category missing from the geo files makes Xray reject the whole config,
+// so such entries are skipped with a warning. Codes are stored as plain text in the .dat files.
+let geo_data = {};
+function geo_has(file, code) {
+	if (!(file in geo_data))
+		geo_data[file] = fs.readfile(`${getenv('XRAY_LOCATION_ASSET') || '/usr/share/xraypanel/geo'}/${file}.dat`);
+	const d = geo_data[file];
+	if (d == null) return true;
+	code = split(replace(code, /^!/, ''), '@')[0];
+	// Category codes are stored in upper case; domains inside are lower case, so only upper case counts.
+	return index(d, uc(code)) >= 0;
+}
+
 function classify(v, label) {
 	v = trim(v);
 	if (v == '') return null;
 	let m = match(v, /^([a-z-]+):(.+)$/);
-	if (match(v, /^[0-9a-fA-F]*:[0-9a-fA-F:]+(\/[0-9]+)?$/))
+	if (match(v, /^[0-9a-fA-F]*:[0-9a-fA-F:.]+(\/[0-9]+)?$/))
 		return [ 'ip', v ];
 	if (m && m[1] == 'port') {
 		if (valid_ports(m[2])) return [ 'port', m[2] ];
 		push(warnings, `Rule "${label}": "${v}" is not a valid port or range, ignored`);
+		return null;
+	}
+	if (m && (m[1] == 'geosite' || m[1] == 'geoip') && !geo_has(m[1], m[2])) {
+		push(warnings, `Rule "${label}": "${v}" is not in the geo files, ignored (the lite files only have ir, category-ir, private and ads; switch to the full files in Settings for more)`);
 		return null;
 	}
 	if (m && index(IP_PREFIX, m[1]) >= 0) return [ 'ip', v ];
@@ -479,7 +526,7 @@ uci.foreach('xraypanel', 'rule', (s) => {
 	// Older rules keep everything in one "match" list; each kind becomes its own rule.
 	if (s.match != null && s.domain == null && s.ip == null && s.port == null) {
 		let got = { domain: [], ip: [], port: [] };
-		for (let v in list(s.match)) {
+		for (let v in ((type(s.match) == 'array') ? s.match : split(trim(s.match), / +/))) {
 			let c = classify(v, label);
 			if (c) push(got[c[0]], c[1]);
 		}
@@ -552,7 +599,7 @@ if (target.balancerTag) {
 	observatory = {
 		subjectSelector: [ 'node-' ],
 		probeUrl: probe_url,
-		probeInterval: `${int(opt(main.probe_interval, 60))}s`,
+		probeInterval: `${probe_interval}s`,
 		enableConcurrency: true
 	};
 }

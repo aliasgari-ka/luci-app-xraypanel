@@ -16,10 +16,20 @@ config main 'main'
 	option geo_update 'weekly'
 	option geoip_url 'https://cdn.jsdelivr.net/gh/chocolate4u/Iran-v2ray-rules@release/geoip-lite.dat'
 	option geosite_url 'https://cdn.jsdelivr.net/gh/chocolate4u/Iran-v2ray-rules@release/geosite-lite.dat'
-	list direct_ip 'geoip:private'
-	list direct_ip 'geoip:ir'
-	list direct_domain 'geosite:ir'
-	list direct_domain 'domain:ir'
+
+config rule
+	option label 'Direct IPs'
+	option enabled '1'
+	list ip 'geoip:private'
+	list ip 'geoip:ir'
+	option outbound 'direct'
+
+config rule
+	option label 'Direct domains'
+	option enabled '1'
+	list domain 'geosite:ir'
+	list domain 'domain:ir'
+	option outbound 'direct'
 
 config rule
 	option label 'Block ads'
