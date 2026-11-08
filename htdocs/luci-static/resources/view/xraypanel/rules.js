@@ -89,6 +89,40 @@ function legacy(section_id) {
 	return { domain: d, ip: ip, port: port.filter(function(p) { return validPorts(p) === true; }) };
 }
 
+// Ready-made domain lists, like the ones 3x-ui offers. The first four are in the lite geosite
+// file; the rest come from the extra geosite file (Settings > More geosite categories).
+var GEOSITES = [
+	[ 'geosite:ir', _('Iran: sites, banks, apps') ],
+	[ 'geosite:category-ir', _('Iranian services') ],
+	[ 'domain:ir', _('All .ir domains') ],
+	[ 'geosite:ads', _('Ads (Iran list)') ],
+	[ 'geosite:category-ads-all', _('Ads (global list)') ],
+	[ 'geosite:google', 'Google' ],
+	[ 'geosite:youtube', 'YouTube' ],
+	[ 'geosite:telegram', 'Telegram' ],
+	[ 'geosite:instagram', 'Instagram' ],
+	[ 'geosite:facebook', 'Facebook' ],
+	[ 'geosite:whatsapp', 'WhatsApp' ],
+	[ 'geosite:twitter', 'X / Twitter' ],
+	[ 'geosite:tiktok', 'TikTok' ],
+	[ 'geosite:spotify', 'Spotify' ],
+	[ 'geosite:netflix', 'Netflix' ],
+	[ 'geosite:speedtest', 'Speedtest (Ookla)' ],
+	[ 'geosite:openai', 'OpenAI / ChatGPT' ],
+	[ 'geosite:anthropic', 'Anthropic / Claude' ],
+	[ 'geosite:github', 'GitHub' ],
+	[ 'geosite:microsoft', 'Microsoft' ],
+	[ 'geosite:apple', 'Apple' ],
+	[ 'geosite:amazon', 'Amazon' ],
+	[ 'geosite:cloudflare', 'Cloudflare' ],
+	[ 'geosite:discord', 'Discord' ],
+	[ 'geosite:reddit', 'Reddit' ],
+	[ 'geosite:linkedin', 'LinkedIn' ],
+	[ 'geosite:twitch', 'Twitch' ],
+	[ 'geosite:steam', 'Steam' ],
+	[ 'geosite:category-porn', _('Adult sites') ]
+];
+
 // Lists that older versions kept on the main section, shown as normal rules now.
 var BASIC = [
 	[ 'block_ip', 'ip', 'block', _('Blocked IPs') ],
@@ -193,11 +227,9 @@ return view.extend({
 		o = s.taboption('dest', form.DynamicList, 'domain', _('Domain'),
 			_('Examples: geosite:ir, domain:example.com, full:www.example.com, keyword:bank, regexp:\\.ir$'));
 		o.modalonly = true;
-		o.value('geosite:ir', 'geosite:ir');
-		o.value('geosite:category-ir', 'geosite:category-ir');
-		o.value('geosite:ads', 'geosite:ads');
-		o.value('domain:ir', 'domain:ir');
-		o.value('geosite:category-ads-all', 'geosite:category-ads-all (full geosite only)');
+		GEOSITES.forEach(function(g) {
+			o.value(g[0], '%s (%s)'.format(g[1], g[0]));
+		});
 		o.validate = checkDomain;
 
 		o = s.taboption('dest', form.DynamicList, 'ip', _('IP'),

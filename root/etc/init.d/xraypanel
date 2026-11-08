@@ -108,7 +108,7 @@ start_service() {
 	migrate_nodes
 	config_load xraypanel
 	config_get_bool enabled main enabled 0
-	config_get geo main geo_update weekly
+	config_get geo main geo_update daily
 
 	mkdir -p "$XP_RUN" "$XP_ETC"
 	rm -f "$XP_RUN/error" "$XP_RUN/warnings" "$XP_RUN/fails"

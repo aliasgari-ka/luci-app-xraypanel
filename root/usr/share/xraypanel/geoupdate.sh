@@ -1,5 +1,6 @@
 #!/bin/sh
-# Downloads geoip/geosite, checks them against the current config, then swaps them in.
+# Downloads geoip/geosite (and the optional extra geosite with more categories), checks them
+# against the current config, then swaps them in.
 
 . /usr/share/xraypanel/common.sh
 
@@ -21,7 +22,16 @@ fail() {
 	exit 1
 }
 
-for kind in geoip geosite; do
+KINDS="geoip geosite"
+extra_url=$(uci -q get xraypanel.main.geosite_extra_url)
+if [ -n "$extra_url" ]; then
+	KINDS="$KINDS geosite_extra"
+elif [ -f "$XP_ASSET/geosite_extra.dat" ]; then
+	# Turned off: the current config may still point at it, so test with it and remove it after.
+	cp "$XP_ASSET/geosite_extra.dat" "$TMP/geosite_extra.dat"
+fi
+
+for kind in $KINDS; do
 	url=$(uci -q get "xraypanel.main.${kind}_url")
 	[ -n "$url" ] || fail "no URL set for $kind"
 	fetch "$url" "$TMP/$kind.dat" || fail "could not download $kind"
@@ -39,19 +49,32 @@ if [ -f "$XP_CONF" ]; then
 		fail "new files do not work with the current rules"
 fi
 
-if cmp -s "$TMP/geoip.dat" "$XP_ASSET/geoip.dat" && cmp -s "$TMP/geosite.dat" "$XP_ASSET/geosite.dat"; then
+changed=0
+for kind in $KINDS; do
+	cmp -s "$TMP/$kind.dat" "$XP_ASSET/$kind.dat" || changed=1
+done
+[ -z "$extra_url" ] && [ -f "$XP_ASSET/geosite_extra.dat" ] && changed=1
+
+if [ "$changed" = 0 ]; then
 	date +%s > "$XP_ASSET/updated"
 	echo "OK: geo files are already current"
 	exit 0
 fi
 
-cp "$TMP/geoip.dat" "$XP_ASSET/geoip.dat.new" && cp "$TMP/geosite.dat" "$XP_ASSET/geosite.dat.new" ||
-	fail "not enough space to store the new files"
-mv "$XP_ASSET/geoip.dat.new" "$XP_ASSET/geoip.dat"
-mv "$XP_ASSET/geosite.dat.new" "$XP_ASSET/geosite.dat"
+for kind in $KINDS; do
+	cp "$TMP/$kind.dat" "$XP_ASSET/$kind.dat.new" || {
+		rm -f "$XP_ASSET"/*.dat.new
+		fail "not enough space to store the new files"
+	}
+done
+for kind in $KINDS; do
+	mv "$XP_ASSET/$kind.dat.new" "$XP_ASSET/$kind.dat"
+done
+[ -z "$extra_url" ] && rm -f "$XP_ASSET/geosite_extra.dat"
 date +%s > "$XP_ASSET/updated"
 logger -t xraypanel "geo files updated"
 
-# Restart also covers the first install, when Xray could not start without geo files.
+# Restart also covers the first install, when Xray could not start without geo files, and
+# regenerates the config so rules use (or stop using) the extra categories.
 xp_enabled && /etc/init.d/xraypanel restart
 echo "OK: geo files updated"

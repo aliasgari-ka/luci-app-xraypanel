@@ -438,14 +438,17 @@ function outref(name, label) {
 // A geosite:/geoip: category missing from the geo files makes Xray reject the whole config,
 // so such entries are skipped with a warning. Codes are stored as plain text in the .dat files.
 let geo_data = {};
-function geo_has(file, code) {
+// missing: what to answer when the file is not there.
+function geo_has(file, code, missing) {
 	if (!(file in geo_data))
 		geo_data[file] = fs.readfile(`${getenv('XRAY_LOCATION_ASSET') || '/usr/share/xraypanel/geo'}/${file}.dat`);
 	const d = geo_data[file];
-	if (d == null) return true;
-	code = split(replace(code, /^!/, ''), '@')[0];
-	// Category codes are stored in upper case; domains inside are lower case, so only upper case counts.
-	return index(d, uc(code)) >= 0;
+	if (d == null) return missing;
+	code = uc(split(replace(code, /^!/, ''), '@')[0]);
+	if (code == '' || length(code) > 127) return false;
+	// Each entry starts with its code as protobuf field 1: 0x0a, length, upper-case code.
+	// Matching the length too keeps GOOGLE from matching GOOGLE-CN.
+	return index(d, chr(10, length(code)) + code) >= 0;
 }
 
 function classify(v, label) {
@@ -459,8 +462,14 @@ function classify(v, label) {
 		push(warnings, `Rule "${label}": "${v}" is not a valid port or range, ignored`);
 		return null;
 	}
-	if (m && (m[1] == 'geosite' || m[1] == 'geoip') && !geo_has(m[1], m[2])) {
-		push(warnings, `Rule "${label}": "${v}" is not in the geo files, ignored (the lite files only have ir, category-ir, private and ads; switch to the full files in Settings for more)`);
+	if (m && m[1] == 'geosite' && !geo_has('geosite', m[2], true)) {
+		// Categories the main (lite) file lacks come from the extra file, as ext:file:code.
+		if (geo_has('geosite_extra', m[2], false)) return [ 'domain', `ext:geosite_extra.dat:${m[2]}` ];
+		push(warnings, `Rule "${label}": "${v}" is not in the geo files, ignored (turn on "More geosite categories" in Settings, or check the name)`);
+		return null;
+	}
+	if (m && m[1] == 'geoip' && !geo_has('geoip', m[2], true)) {
+		push(warnings, `Rule "${label}": "${v}" is not in the geoip file, ignored`);
 		return null;
 	}
 	if (m && index(IP_PREFIX, m[1]) >= 0) return [ 'ip', v ];

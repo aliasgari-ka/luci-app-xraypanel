@@ -13,9 +13,10 @@ config main 'main'
 	option dns_direct '8.8.8.8'
 	option loglevel 'warning'
 	option access_log '0'
-	option geo_update 'weekly'
+	option geo_update 'daily'
 	option geoip_url 'https://cdn.jsdelivr.net/gh/chocolate4u/Iran-v2ray-rules@release/geoip-lite.dat'
 	option geosite_url 'https://cdn.jsdelivr.net/gh/chocolate4u/Iran-v2ray-rules@release/geosite-lite.dat'
+	option geosite_extra_url 'https://cdn.jsdelivr.net/gh/v2fly/domain-list-community@release/dlc.dat'
 
 config rule
 	option label 'Direct IPs'

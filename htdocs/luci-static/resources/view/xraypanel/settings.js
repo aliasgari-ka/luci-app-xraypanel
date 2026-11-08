@@ -76,15 +76,20 @@ return view.extend({
 		o.value('off', _('Off'));
 		o.value('daily', _('Daily at 04:30'));
 		o.value('weekly', _('Weekly, Friday 04:30'));
-		o.default = 'weekly';
+		o.default = 'daily';
 
 		o = s.option(form.Value, 'geoip_url', _('geoip.dat URL'));
 		o.rmempty = false;
 		o.validate = checkUrl;
 
 		o = s.option(form.Value, 'geosite_url', _('geosite.dat URL'),
-			_('The lite files are small and only include ir, category-ir, private and ads. Use the full files if your rules need more categories (they use more memory). After changing a URL, press "Update geo files" on the Status page.'));
+			_('The lite file is small and only has ir, category-ir, private and ads. Other categories come from the extra file below. After changing a URL, press "Update geo files" on the Status page.'));
 		o.rmempty = false;
+		o.validate = checkUrl;
+
+		o = s.option(form.Value, 'geosite_extra_url', _('More geosite categories'),
+			_('A second geosite file for categories the lite file does not have (google, youtube, spotify, speedtest, telegram, openai, netflix and many more). Rules use them as geosite:name. The v2fly file is about 2.4 MB and adds a few MB of memory while Xray starts. Leave empty to turn it off.'));
+		o.placeholder = 'https://cdn.jsdelivr.net/gh/v2fly/domain-list-community@release/dlc.dat';
 		o.validate = checkUrl;
 
 		s = m.section(form.NamedSection, 'main', 'main', _('Logging'));
