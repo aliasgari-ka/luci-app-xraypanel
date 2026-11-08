@@ -1,0 +1,38 @@
+
+config main 'main'
+	option enabled '0'
+	option mode 'balance'
+	option strategy 'leastPing'
+	option probe_interval '60'
+	option probe_url 'https://www.gstatic.com/generate_204'
+	option default_out 'proxy'
+	list lan_ifaces 'br-lan'
+	option block_quic '1'
+	option dns_enabled '1'
+	option dns_remote '1.1.1.1'
+	option dns_direct '8.8.8.8'
+	option loglevel 'warning'
+	option access_log '0'
+	option geo_update 'weekly'
+	option geoip_url 'https://cdn.jsdelivr.net/gh/chocolate4u/Iran-v2ray-rules@release/geoip-lite.dat'
+	option geosite_url 'https://cdn.jsdelivr.net/gh/chocolate4u/Iran-v2ray-rules@release/geosite-lite.dat'
+
+config rule
+	option label 'Local networks'
+	option enabled '1'
+	list match 'geoip:private'
+	option outbound 'direct'
+
+config rule
+	option label 'Iran (sites, banks, apps)'
+	option enabled '1'
+	list match 'geosite:ir'
+	list match 'domain:ir'
+	list match 'geoip:ir'
+	option outbound 'direct'
+
+config rule
+	option label 'Block ads'
+	option enabled '0'
+	list match 'geosite:ads'
+	option outbound 'block'

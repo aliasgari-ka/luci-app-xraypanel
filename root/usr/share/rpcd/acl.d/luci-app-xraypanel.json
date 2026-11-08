@@ -1,0 +1,27 @@
+{
+	"luci-app-xraypanel": {
+		"description": "Grant access to the Xray panel",
+		"read": {
+			"cgi-io": [ "exec" ],
+			"file": {
+				"/usr/share/xraypanel/status.sh": [ "exec" ],
+				"/sbin/logread -l 400 -e xray": [ "exec" ]
+			},
+			"ubus": {
+				"file": [ "exec" ]
+			},
+			"uci": [ "xraypanel" ]
+		},
+		"write": {
+			"cgi-io": [ "exec" ],
+			"file": {
+				"/usr/share/xraypanel/ctl.sh restart": [ "exec" ],
+				"/usr/share/xraypanel/ctl.sh geo": [ "exec" ]
+			},
+			"ubus": {
+				"file": [ "exec" ]
+			},
+			"uci": [ "xraypanel" ]
+		}
+	}
+}

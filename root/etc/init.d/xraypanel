@@ -1,0 +1,90 @@
+#!/bin/sh /etc/rc.common
+
+USE_PROCD=1
+START=95
+STOP=10
+
+RUN=/var/run/xraypanel
+CONF=/var/etc/xraypanel/config.json
+NEXT=/var/etc/xraypanel/next.json
+ASSET=/usr/share/xraypanel/geo
+CRON=/etc/crontabs/root
+
+cron_update() {
+	local geo="$1" tmp
+	tmp=$(mktemp)
+	mkdir -p /etc/crontabs
+	touch "$CRON"
+	grep -v '# xraypanel$' "$CRON" > "$tmp"
+	if [ -n "$geo" ]; then
+		echo '* * * * * /usr/share/xraypanel/watchdog.sh # xraypanel' >> "$tmp"
+		case "$geo" in
+			daily) echo '30 4 * * * /usr/share/xraypanel/geoupdate.sh >/dev/null 2>&1 # xraypanel' >> "$tmp" ;;
+			weekly) echo '30 4 * * 5 /usr/share/xraypanel/geoupdate.sh >/dev/null 2>&1 # xraypanel' >> "$tmp" ;;
+		esac
+	fi
+	if ! cmp -s "$tmp" "$CRON"; then
+		cp "$tmp" "$CRON"
+		/etc/init.d/cron restart >/dev/null 2>&1
+	fi
+	rm -f "$tmp"
+}
+
+fail() {
+	echo "$1" > "$RUN/error"
+	logger -t xraypanel "$1"
+}
+
+start_service() {
+	local enabled geo
+
+	config_load xraypanel
+	config_get_bool enabled main enabled 0
+	config_get geo main geo_update weekly
+
+	mkdir -p "$RUN" /var/etc/xraypanel
+	rm -f "$RUN/error" "$RUN/warnings"
+
+	if [ "$enabled" != 1 ]; then
+		cron_update ""
+		/usr/share/xraypanel/firewall.sh stop
+		return 0
+	fi
+
+	if ! /usr/bin/ucode /usr/share/xraypanel/gen.uc > "$NEXT" 2> "$RUN/gen.log"; then
+		fail "Configuration error: $(cat "$RUN/gen.log")"
+		return 1
+	fi
+	[ -s "$RUN/gen.log" ] && cp "$RUN/gen.log" "$RUN/warnings"
+
+	if ! XRAY_LOCATION_ASSET="$ASSET" /usr/bin/xray run -test -c "$NEXT" > "$RUN/test.log" 2>&1; then
+		fail "Xray rejected the configuration: $(grep -v '^Xray \|^A unified' "$RUN/test.log" | tail -n 5)"
+		return 1
+	fi
+	mv "$NEXT" "$CONF"
+
+	cron_update "$geo"
+
+	procd_open_instance xray
+	procd_set_param command /usr/bin/xray run -c "$CONF"
+	procd_set_param env XRAY_LOCATION_ASSET="$ASSET" GOMEMLIMIT=48MiB GOGC=50
+	procd_set_param respawn 3600 5 0
+	procd_set_param stdout 1
+	procd_set_param stderr 1
+	procd_close_instance
+
+	( sleep 4; /usr/share/xraypanel/watchdog.sh ) >/dev/null 2>&1 &
+}
+
+stop_service() {
+	/usr/share/xraypanel/firewall.sh stop
+}
+
+reload_service() {
+	stop
+	start
+}
+
+service_triggers() {
+	procd_add_reload_trigger xraypanel
+}

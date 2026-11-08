@@ -1,0 +1,86 @@
+'use strict';
+'require view';
+'require form';
+'require uci';
+
+return view.extend({
+	load: function() {
+		return uci.load('xraypanel');
+	},
+
+	render: function() {
+		var m, s, o;
+
+		m = new form.Map('xraypanel', _('Xray settings'));
+
+		s = m.section(form.NamedSection, 'main', 'main', _('Network'));
+		s.addremove = false;
+
+		o = s.option(form.DynamicList, 'lan_ifaces', _('Interfaces to route'),
+			_('Only clients on these interfaces go through Xray. Leave other networks (for example a direct-only Wi-Fi) out of this list.'));
+		o.placeholder = 'br-lan';
+
+		o = s.option(form.DynamicList, 'bypass_src', _('Devices that stay direct'),
+			_('IP addresses or ranges that never go through Xray.'));
+		o.datatype = 'ipmask4';
+
+		o = s.option(form.Flag, 'block_quic', _('Block QUIC'),
+			_('Rejects UDP 443 so apps fall back to TCP, which Xray can carry. Recommended.'));
+		o.default = '1';
+		o.rmempty = false;
+
+		s = m.section(form.NamedSection, 'main', 'main', _('DNS'));
+		s.addremove = false;
+
+		o = s.option(form.Flag, 'dns_enabled', _('Resolve DNS through Xray'),
+			_('Avoids poisoned DNS answers. Iranian domains are resolved directly.'));
+		o.default = '1';
+		o.rmempty = false;
+
+		o = s.option(form.Value, 'dns_remote', _('DNS server through the proxy'));
+		o.datatype = 'ip4addr("nomask")';
+		o.placeholder = '1.1.1.1';
+
+		o = s.option(form.Value, 'dns_direct', _('DNS server for Iranian domains'));
+		o.datatype = 'ip4addr("nomask")';
+		o.placeholder = '8.8.8.8';
+
+		s = m.section(form.NamedSection, 'main', 'main', _('Health check'));
+		s.addremove = false;
+
+		o = s.option(form.Value, 'probe_url', _('Probe URL'),
+			_('Used for the latency test and the automatic fail-open check.'));
+		o.placeholder = 'https://www.gstatic.com/generate_204';
+
+		s = m.section(form.NamedSection, 'main', 'main', _('Geo files'));
+		s.addremove = false;
+
+		o = s.option(form.ListValue, 'geo_update', _('Automatic update'));
+		o.value('off', _('Off'));
+		o.value('daily', _('Daily at 04:30'));
+		o.value('weekly', _('Weekly, Friday 04:30'));
+		o.default = 'weekly';
+
+		o = s.option(form.Value, 'geoip_url', _('geoip.dat URL'));
+		o.rmempty = false;
+
+		o = s.option(form.Value, 'geosite_url', _('geosite.dat URL'),
+			_('The lite files are small and only include ir, private and ads. Use the full files if your rules need more categories (they use more memory).'));
+		o.rmempty = false;
+
+		s = m.section(form.NamedSection, 'main', 'main', _('Logging'));
+		s.addremove = false;
+
+		o = s.option(form.ListValue, 'loglevel', _('Log level'));
+		o.value('error', 'error');
+		o.value('warning', 'warning');
+		o.value('info', 'info');
+		o.value('debug', 'debug');
+		o.default = 'warning';
+
+		o = s.option(form.Flag, 'access_log', _('Log every connection'),
+			_('Useful for debugging rules. Keep it off normally to save memory.'));
+
+		return m.render();
+	}
+});
