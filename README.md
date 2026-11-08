@@ -10,9 +10,9 @@ It is built for routers with little memory. There is no extra daemon: the panel 
 
 - **Several servers.** Paste `vmess://`, `vless://` (including REALITY), `trojan://` and `ss://` share links, several at once, or a full Xray outbound as JSON. Transports: tcp, ws, grpc, httpupgrade, xhttp, http, kcp.
 - **Load balancing.** Lowest latency (Xray observatory), round robin or random. Or pin one server.
-- **Routing rules.** Ordered rules with `geosite:`, `geoip:`, `domain:`, `full:`, `keyword:`, `regexp:`, IP ranges and `port:`. Each rule sends traffic direct, through the proxy, or blocks it. Iranian sites, banks and apps go direct by default.
+- **Routing rules.** Ordered rules with `geosite:`, `geoip:`, `domain:`, `full:`, `keyword:`, `regexp:`, `ext:`/`ext-ip:` (custom .dat files), IP ranges and `port:`. Each rule sends traffic direct, through the proxy, or blocks it. Iranian sites, banks and apps go direct by default. Domain entries are matched first; IP entries apply once no domain entry matched.
 - **DNS through Xray.** Avoids poisoned answers. Iranian domains and your proxy servers' hostnames are resolved directly.
-- **Automatic geo updates.** Daily or weekly through cron, downloaded through the proxy when possible. New files are tested against your rules before they replace the old ones.
+- **Automatic geo updates.** Daily or weekly through cron, downloaded through the proxy when possible. Files are checked against the published SHA-256 when the source has one, and tested against your rules before they replace the old ones.
 - **Fail-open watchdog.** Every minute the router checks the proxy. LAN traffic only goes through Xray while it answers. After three failed checks, LAN goes back to direct until the proxy recovers.
 - **Per-device and per-network bypass.** Choose which interfaces are routed (for example only `br-lan`, so a second "direct" Wi-Fi stays direct) and which IPs never go through Xray.
 - **QUIC blocking** so apps fall back to TCP, which the redirect can carry.
@@ -34,7 +34,9 @@ curl -fsSL https://raw.githubusercontent.com/aliasgari-ka/luci-app-xraypanel/mai
 
 If the router has no `curl` yet, install it first (`apk add curl` or `opkg install curl`).
 
-To build an installable package instead, put this folder under `package/` in an OpenWrt SDK and run `make package/luci-app-xraypanel/compile`.
+The script installs whatever is on `main` at that moment. To install a version you have reviewed, download the script and pass a commit or tag: `sh install.sh <commit>`. It prints the SHA-256 of the source it downloaded.
+
+To build an installable package instead, put this folder under `package/` in an OpenWrt SDK that has the `luci` feed installed (`./scripts/feeds update luci && ./scripts/feeds install luci-base`) and run `make package/luci-app-xraypanel/compile`.
 
 ## Use
 
@@ -45,7 +47,7 @@ Open `http://192.168.1.1` (your router's LAN address), log in, then go to **Serv
 3. **Settings**: interfaces to route, devices that stay direct, DNS, geo update schedule.
 4. **Status**: service state, whether LAN is going through Xray, proxy latency, memory use, log, and buttons to restart or update geo files.
 
-LuCI's own *Save & Apply* rolls back automatically if you lose access to the router after a change.
+If a change is wrong (a server Xray rejects, a typo in a rule), the panel skips the broken server or keeps the last working settings running and shows the error on the Status page. LuCI's own rollback only helps if you lose access to the router itself, not if the internet stops working.
 
 ## How it works
 
@@ -57,8 +59,10 @@ LuCI's own *Save & Apply* rolls back automatically if you lose access to the rou
 | `/usr/share/xraypanel/firewall.sh` | Adds or removes the nftables redirect table and the dnsmasq hand-off |
 | `/usr/share/xraypanel/watchdog.sh` | Runs every minute; applies or removes the redirect based on a proxy check |
 | `/usr/share/xraypanel/geoupdate.sh` | Downloads and tests geo files |
+| `/usr/share/xraypanel/test.uc` | Tests every server through its own local port |
+| `/usr/share/xraypanel/common.sh` | Paths and ports shared by the shell scripts |
 
-TCP from LAN clients is redirected (`nft redirect`) to Xray's `dokodemo-door` inbound with sniffing. This works on kernels without the TPROXY module. Xray connects to the servers from the router itself, so its own traffic is never redirected.
+TCP from LAN clients is redirected (`nft redirect`) to Xray's `dokodemo-door` inbound with sniffing. This works on kernels without the TPROXY module. Xray connects to the servers from the router itself, so its own traffic is never redirected. A small guard table drops connections to the redirect port that were not redirected, so a client cannot make Xray dial itself.
 
 ## Limits
 

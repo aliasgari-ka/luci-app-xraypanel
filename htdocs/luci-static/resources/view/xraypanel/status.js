@@ -69,11 +69,18 @@ function msClass(ms) {
 	return ms < 400 ? 'good' : ms < 1000 ? 'mid' : 'slow';
 }
 
+// LuCI's E() inserts a plain string as HTML but an array of strings as text.
+// Everything that can come from a share link, a log or a script goes through text().
+function text(s) {
+	return [ s == null ? '' : '' + s ];
+}
+
 function card(key, value, sub, extra) {
 	return E('div', { 'class': 'xp-card' }, [
-		E('div', { 'class': 'xp-k' }, key),
-		E('div', { 'class': 'xp-v', 'title': typeof value == 'string' ? value : '' }, value),
-		sub ? E('div', { 'class': 'xp-s' }, sub) : '',
+		E('div', { 'class': 'xp-k' }, text(key)),
+		E('div', { 'class': 'xp-v', 'title': typeof value == 'string' ? value : '' },
+			typeof value == 'string' ? text(value) : value),
+		sub ? E('div', { 'class': 'xp-s' }, text(sub)) : '',
 		extra || ''
 	]);
 }
@@ -109,10 +116,10 @@ return view.extend({
 		return fs.exec_direct('/usr/share/xraypanel/ctl.sh', [ action ]).then(function(out) {
 			out = (out || '').trim();
 			var err = /^ERROR/.test(out);
-			ui.addNotification(null, E('p', out.replace(/^(OK|ERROR):\s*/, '') || _('Done')), err ? 'error' : 'info');
+			ui.addNotification(null, E('p', text(out.replace(/^(OK|ERROR):\s*/, '') || _('Done'))), err ? 'error' : 'info');
 			return self.refresh();
 		}).catch(function(e) {
-			ui.addNotification(null, E('p', e.message), 'error');
+			ui.addNotification(null, E('p', text(e.message)), 'error');
 		});
 	},
 
@@ -232,7 +239,7 @@ return view.extend({
 			else state = pill('#1976d2', _('Ready'));
 
 			return E('tr', {}, [
-				E('td', {}, E('strong', {}, s.label)),
+				E('td', {}, E('strong', {}, text(s.label))),
 				E('td', {}, state),
 				E('td', {}, lat),
 				E('td', {}, s.enabled ? '%s ↓ / %s ↑'.format(fmtBytes(s.down || 0), fmtBytes(s.up || 0)) : '-')
@@ -247,9 +254,12 @@ return view.extend({
 	renderAlerts: function(st) {
 		var out = [];
 		if (st.error)
-			out.push(E('div', { 'class': 'alert-message error', 'style': 'white-space:pre-wrap' }, st.error));
+			out.push(E('div', { 'class': 'alert-message error', 'style': 'white-space:pre-wrap' }, text(st.error)));
 		if (st.warnings)
-			out.push(E('div', { 'class': 'alert-message warning', 'style': 'white-space:pre-wrap' }, st.warnings));
+			out.push(E('div', { 'class': 'alert-message warning', 'style': 'white-space:pre-wrap' }, text(st.warnings)));
+		if (st.geo_result)
+			out.push(E('div', { 'class': 'alert-message ' + (/^ERROR/.test(st.geo_result) ? 'error' : 'info'), 'style': 'white-space:pre-wrap' },
+				text(_('Geo update: %s').format(st.geo_result.replace(/^(OK|ERROR):\s*/, '')))));
 		return out;
 	},
 

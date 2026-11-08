@@ -37,7 +37,7 @@ function summary(link) {
 	if (proto == 'vmess') {
 		var j = vmessJson(link);
 		if (!j) return 'vmess ' + _('(unreadable)');
-		return 'vmess ' + j.add + ':' + j.port + ' ' + (j.net || 'tcp') + (j.tls ? '+' + j.tls : '');
+		return 'vmess ' + j.add + ':' + j.port + ' ' + (j.net || 'tcp') + (j.tls && j.tls != 'none' ? '+' + j.tls : '');
 	}
 	var rest = m[2].replace(/#.*$/, '');
 	var qi = rest.indexOf('?');
@@ -47,7 +47,8 @@ function summary(link) {
 		var dec = b64(hp) || '';
 		hp = dec.replace(/^.*@/, '') || '?';
 	}
-	var sec = q.get('security');
+	// gen.uc defaults trojan to TLS.
+	var sec = q.get('security') || (proto == 'trojan' ? 'tls' : null);
 	return proto + ' ' + hp + ' ' + (q.get('type') || 'tcp') + (sec && sec != 'none' ? '+' + sec : '');
 }
 
@@ -65,18 +66,60 @@ function linkName(link) {
 	try { return decodeURIComponent(link.substring(h + 1)); } catch (e) { return link.substring(h + 1); }
 }
 
+// Same host:port rules as gen.uc: "[v6]:port" or "host:port", port 1-65535.
+function validHostPort(s) {
+	var m = s.match(/^\[(.+)\]:([0-9]+)$/) || s.match(/^([^:\/\[\]]+):([0-9]+)$/);
+	return !!m && +m[2] > 0 && +m[2] < 65536;
+}
+
+// Catches the mistakes gen.uc would reject, so they show up before Save & Apply.
 function checkLink(value) {
 	value = (value || '').trim();
 	if (!value) return _('Paste a share link');
 	if (value.charAt(0) == '{') {
-		try { JSON.parse(value); return true; }
+		var ob;
+		try { ob = JSON.parse(value); }
 		catch (e) { return _('Not valid JSON'); }
+		return (ob && typeof ob == 'object' && ob.protocol) ? true : _('A JSON outbound needs a "protocol" field');
 	}
-	if (!/^(vmess|vless|trojan|ss):\/\/\S+$/i.test(value))
+	var m = value.match(/^(vmess|vless|trojan|ss):\/\/(\S+)$/i);
+	if (!m)
 		return _('Supported: vmess://, vless://, trojan://, ss:// or a JSON outbound');
-	if (/^vmess:/i.test(value) && !vmessJson(value))
-		return _('This vmess link cannot be decoded');
+	var proto = m[1].toLowerCase(), body = m[2].replace(/#.*$/, '');
+	if (proto == 'vmess') {
+		var j = vmessJson(value);
+		if (!j) return _('This vmess link cannot be decoded');
+		if (!j.add || !j.port || !j.id) return _('This vmess link has no address, port or id');
+		return true;
+	}
+	var qi = body.indexOf('?');
+	var q = new URLSearchParams(qi >= 0 ? body.substring(qi + 1) : '');
+	var hp = (qi >= 0 ? body.substring(0, qi) : body).replace(/\/+$/, '');
+	var at = hp.lastIndexOf('@');
+	if (proto == 'ss') {
+		if (q.get('plugin')) return _('Shadowsocks plugins are not supported');
+		if (at < 0) {
+			var dec = b64(hp);
+			at = dec ? dec.lastIndexOf('@') : -1;
+			if (at < 0) return _('This shadowsocks link cannot be decoded');
+			hp = dec;
+		}
+	}
+	else if (at <= 0) {
+		return proto == 'trojan' ? _('This trojan link has no password') : _('This vless link has no UUID');
+	}
+	if (!validHostPort(hp.substring(at + 1)))
+		return _('This link has no valid server address and port');
+	if (q.get('security') == 'reality' && !q.get('pbk'))
+		return _('This REALITY link has no public key (pbk)');
 	return true;
+}
+
+// The import box takes one link per line, or a single JSON outbound (which may span lines).
+function importLines(value) {
+	value = (value || '').trim();
+	if (value.charAt(0) == '{') return [ value ];
+	return value.split(/\r?\n/).map(function(l) { return l.trim(); }).filter(function(l) { return l; });
 }
 
 return view.extend({
@@ -90,10 +133,10 @@ return view.extend({
 	testAll: function() {
 		return fs.exec_direct('/usr/share/xraypanel/ctl.sh', [ 'test' ]).then(function(out) {
 			out = (out || '').trim();
-			ui.addNotification(null, E('p', out.replace(/^(OK|ERROR):\s*/, '')), /^ERROR/.test(out) ? 'error' : 'info');
+			ui.addNotification(null, E('p', [ out.replace(/^(OK|ERROR):\s*/, '') ]), /^ERROR/.test(out) ? 'error' : 'info');
 			window.setTimeout(function() { location.reload(); }, 800);
 		}).catch(function(e) {
-			ui.addNotification(null, E('p', e.message), 'error');
+			ui.addNotification(null, E('p', [ e.message ]), 'error');
 		});
 	},
 
@@ -138,12 +181,12 @@ return view.extend({
 		o.depends({ mode: 'balance', strategy: 'leastPing' });
 
 		o = s.option(form.TextValue, '_import', _('Add servers from links'),
-			_('Paste one or more share links, one per line, then press Save & Apply.'));
+			_('Paste one or more share links, one per line (or one JSON outbound), then press Save & Apply. Links that are already in the list are skipped.'));
 		o.rows = 4;
 		o.wrap = 'off';
 		o.cfgvalue = function() { return ''; };
 		o.validate = function(section_id, value) {
-			var lines = (value || '').split(/\r?\n/).map(function(l) { return l.trim(); }).filter(function(l) { return l; });
+			var lines = importLines(value);
 			for (var i = 0; i < lines.length; i++) {
 				var r = checkLink(lines[i]);
 				if (r !== true) return _('Line %d: %s').format(i + 1, r);
@@ -151,7 +194,12 @@ return view.extend({
 			return true;
 		};
 		o.write = function(section_id, value) {
-			value.split(/\r?\n/).map(function(l) { return l.trim(); }).filter(function(l) { return l; }).forEach(function(l) {
+			var seen = {};
+			uci.sections('xraypanel', 'node').forEach(function(n) { seen[(n.link || '').trim()] = true; });
+			importLines(value).forEach(function(l) {
+				// Pasting the same link twice should not create a second server.
+				if (seen[l]) return;
+				seen[l] = true;
 				var sid = uci.add('xraypanel', 'node');
 				uci.set('xraypanel', sid, 'label', linkName(l) || summary(l));
 				uci.set('xraypanel', sid, 'link', l);
@@ -166,7 +214,8 @@ return view.extend({
 		s.sortable = true;
 		s.nodescriptions = true;
 		s.modaltitle = function(section_id) {
-			return _('Server') + ': ' + (uci.get('xraypanel', section_id, 'label') || _('new'));
+			// Labels come from share links, so they are escaped before LuCI renders them as HTML.
+			return _('Server') + ': ' + '%h'.format(uci.get('xraypanel', section_id, 'label') || _('new'));
 		};
 
 		o = s.option(form.Flag, 'enabled', _('On'));
@@ -180,7 +229,7 @@ return view.extend({
 		o = s.option(form.DummyValue, '_summary', _('Address'));
 		o.modalonly = false;
 		o.textvalue = function(section_id) {
-			return summary(uci.get('xraypanel', section_id, 'link'));
+			return '%h'.format(summary(uci.get('xraypanel', section_id, 'link')));
 		};
 
 		o = s.option(form.DummyValue, '_latency', _('Latency'));

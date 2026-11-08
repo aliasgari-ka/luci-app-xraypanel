@@ -1,25 +1,80 @@
 #!/bin/sh
 # Turns the LAN redirect and the dnsmasq hand-off on or off.
+#   start | stop    LAN redirect + DNS hand-off (switched by the watchdog)
+#   guard | unguard blocks direct connections to Xray's redirect port (while Xray runs)
+#   check           exits 0 if the redirect table is loaded
 
 . /lib/functions.sh
+. /lib/functions/network.sh
+. /usr/share/xraypanel/common.sh
 
-RUN=/var/run/xraypanel
 TABLE=xraypanel
+GUARD=xraypanel_guard
 
-dnsmasq_confdir() {
+# Every dnsmasq instance has its own conf-dir.
+dnsmasq_confdirs() {
 	local d
-	d=$(sed -n 's/^conf-dir=\([^,]*\).*/\1/p' /var/etc/dnsmasq.conf.* 2>/dev/null | head -n1)
+	d=$(sed -n 's/^conf-dir=\([^,]*\).*/\1/p' /var/etc/dnsmasq.conf.* 2>/dev/null | sort -u)
 	echo "${d:-/tmp/dnsmasq.d}"
+}
+
+note() {
+	echo "$1" >> "$XP_RUN/fw_warn"
+	logger -t xraypanel "$1"
 }
 
 IFACES=""
 SRCS=""
-add_iface() { IFACES="${IFACES:+$IFACES, }\"$1\""; }
-add_src() { SRCS="${SRCS:+$SRCS, }$1"; }
+# Accepts a device (br-lan) or a network name (lan), which is turned into its device.
+add_iface() {
+	local dev="$1"
+	case "$dev" in
+		''|*[!A-Za-z0-9._@-]*) note "Interface \"$1\" has an invalid name and was ignored"; return ;;
+	esac
+	if [ ! -e "/sys/class/net/$dev" ]; then
+		network_get_device dev "$1" || network_get_physdev dev "$1"
+		if [ -z "$dev" ] || [ ! -e "/sys/class/net/$dev" ]; then
+			note "Interface \"$1\" does not exist on this router and was ignored"
+			return
+		fi
+	fi
+	case ", $IFACES," in *", \"$dev\","*) return ;; esac
+	IFACES="${IFACES:+$IFACES, }\"$dev\""
+}
+add_src() {
+	if echo "$1" | grep -Eq '^[0-9]{1,3}(\.[0-9]{1,3}){3}(/[0-9]{1,2})?$'; then
+		SRCS="${SRCS:+$SRCS, }$1"
+	else
+		note "Direct device \"$1\" is not an IPv4 address or range and was ignored"
+	fi
+}
+
+dns_handoff() {
+	local d changed=0
+	for d in $(dnsmasq_confdirs); do
+		if [ "$1" = on ]; then
+			mkdir -p "$d"
+			printf 'server=127.0.0.1#%s\nno-resolv\n' "$XP_PORT_DNS" > "$d/xraypanel.conf.new"
+			if cmp -s "$d/xraypanel.conf.new" "$d/xraypanel.conf"; then
+				rm -f "$d/xraypanel.conf.new"
+			else
+				mv "$d/xraypanel.conf.new" "$d/xraypanel.conf"
+				changed=1
+			fi
+		elif [ -f "$d/xraypanel.conf" ]; then
+			rm -f "$d/xraypanel.conf"
+			changed=1
+		fi
+	done
+	[ "$changed" = 1 ] && /etc/init.d/dnsmasq restart >/dev/null 2>&1
+	return 0
+}
 
 start() {
-	local quic dns
+	local quic dns out
 
+	mkdir -p "$XP_RUN"
+	rm -f "$XP_RUN/fw_warn"
 	config_load xraypanel
 	config_list_foreach main lan_ifaces add_iface
 	config_list_foreach main bypass_src add_src
@@ -31,7 +86,7 @@ start() {
 	[ -n "$SRCS" ] && src_elems="elements = { $SRCS }"
 	[ "$quic" = 1 ] && quic_rule='iifname @lan_if ip saddr != @bypass_src ip daddr != @bypass_dst udp dport 443 reject'
 
-	nft -f - <<EOF || return 1
+	if ! out=$(nft -f - 2>&1 <<EOF
 table ip $TABLE
 delete table ip $TABLE
 table ip $TABLE {
@@ -58,7 +113,7 @@ table ip $TABLE {
 		iifname != @lan_if return
 		ip saddr @bypass_src return
 		ip daddr @bypass_dst return
-		meta l4proto tcp redirect to :12345
+		meta l4proto tcp redirect to :$XP_PORT_REDIR
 	}
 	chain forward {
 		type filter hook forward priority filter - 5; policy accept;
@@ -66,36 +121,55 @@ table ip $TABLE {
 	}
 }
 EOF
-
-	if [ "$dns" = 1 ]; then
-		local d
-		d=$(dnsmasq_confdir)
-		mkdir -p "$d"
-		printf 'server=127.0.0.1#5353\nno-resolv\n' > "$d/xraypanel.conf"
-		/etc/init.d/dnsmasq restart >/dev/null 2>&1
+	); then
+		echo "Could not load the firewall rules, LAN stays direct: $out" > "$XP_RUN/fw_error"
+		logger -t xraypanel "nft failed: $out"
+		return 1
 	fi
+	rm -f "$XP_RUN/fw_error"
 
-	mkdir -p "$RUN"
-	touch "$RUN/active"
-	logger -t xraypanel "LAN traffic now goes through Xray"
+	if [ "$dns" = 1 ]; then dns_handoff on; else dns_handoff off; fi
+
+	if [ ! -f "$XP_RUN/active" ]; then
+		touch "$XP_RUN/active"
+		logger -t xraypanel "LAN traffic now goes through Xray"
+	fi
 }
 
 stop() {
-	local d
 	nft delete table ip $TABLE 2>/dev/null
-	d=$(dnsmasq_confdir)
-	if [ -f "$d/xraypanel.conf" ]; then
-		rm -f "$d/xraypanel.conf"
-		/etc/init.d/dnsmasq restart >/dev/null 2>&1
-	fi
-	if [ -f "$RUN/active" ]; then
-		rm -f "$RUN/active"
+	dns_handoff off
+	if [ -f "$XP_RUN/active" ]; then
+		rm -f "$XP_RUN/active"
 		logger -t xraypanel "LAN traffic is direct again"
 	fi
+}
+
+# Only redirected connections may reach the redirect port; a direct one would make Xray dial itself.
+guard() {
+	nft -f - <<EOF
+table ip $GUARD
+delete table ip $GUARD
+table ip $GUARD {
+	chain input {
+		type filter hook input priority filter - 5; policy accept;
+		tcp dport $XP_PORT_REDIR ct status dnat accept
+		tcp dport $XP_PORT_REDIR drop
+	}
+}
+EOF
+}
+
+unguard() {
+	nft delete table ip $GUARD 2>/dev/null
+	return 0
 }
 
 case "$1" in
 	start) start ;;
 	stop) stop ;;
-	*) echo "usage: $0 start|stop" >&2; exit 1 ;;
+	guard) guard ;;
+	unguard) unguard ;;
+	check) nft list table ip $TABLE >/dev/null 2>&1 ;;
+	*) echo "usage: $0 start|stop|guard|unguard|check" >&2; exit 1 ;;
 esac

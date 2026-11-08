@@ -1,11 +1,22 @@
 'use strict';
+// Turns /etc/config/xraypanel into Xray's JSON on stdout. Warnings go to stderr.
+// With XP_CHECK_NODES=1, each server is tested by Xray on its own and the ones
+// Xray rejects are skipped instead of breaking the whole config.
 
 import { cursor } from 'uci';
+import * as fs from 'fs';
 
-const uci = cursor();
+// XP_UCI_DIR lets the config be generated from another directory, for testing.
+const uci = cursor(getenv('XP_UCI_DIR'));
 uci.load('xraypanel');
 
-const RESERVED_MARK = 255;
+// Keep these in sync with common.sh.
+const PORT_REDIR = 12345;
+const PORT_SOCKS = 10808;
+const PORT_DNS = 5353;
+const PORT_API = 10085;
+const PORT_TEST = 10900;
+const CHECK = '/var/etc/xraypanel/check.json';
 
 function opt(v, d) { return (v == null || v == '') ? d : v; }
 
@@ -17,7 +28,7 @@ function on(v, d) {
 
 function list(v) {
 	if (v == null || v == '') return [];
-	return type(v) == 'array' ? v : split(trim(v), /[\s,]+/);
+	return type(v) == 'array' ? v : split(trim(v), /[ ,]+/);
 }
 
 function urldec(s) {
@@ -64,16 +75,36 @@ function parse_query(qs) {
 	return q;
 }
 
+function valid_port(p) {
+	if (!match(p, /^[0-9]+$/)) return false;
+	p = int(p);
+	return p > 0 && p < 65536;
+}
+
+// ucode drops backslashes inside regex character classes, so this avoids them.
 function split_hostport(s) {
-	let m = match(s, /^\[([^\]]+)\]:([0-9]+)$/) || match(s, /^([^:\/\[\]]+):([0-9]+)$/);
-	return m ? { host: m[1], port: int(m[2]) } : null;
+	let host, port;
+	let m = match(s, /^\[(.+)\]:([0-9]+)$/);
+	if (m) {
+		host = m[1];
+		port = m[2];
+	}
+	else {
+		let c = rindex(s, ':');
+		if (c <= 0) return null;
+		host = substr(s, 0, c);
+		port = substr(s, c + 1);
+		if (index(host, ':') >= 0 || index(host, '/') >= 0 || index(host, '[') >= 0) return null;
+	}
+	if (!valid_port(port)) return null;
+	return { host, port: int(port) };
 }
 
 function parse_url(link) {
-	let m = match(link, /^([a-zA-Z0-9]+):\/\/([^#]*)(#(.*))?$/);
+	let m = match(link, /^([a-zA-Z0-9]+):\/\/([^#]*)/);
 	if (!m) return null;
 	let rest = m[2];
-	let u = { scheme: lc(m[1]), name: (m[4] != null) ? urldec(m[4]) : null, query: {} };
+	let u = { scheme: lc(m[1]), query: {} };
 	let qi = index(rest, '?');
 	if (qi >= 0) {
 		u.query = parse_query(substr(rest, qi + 1));
@@ -101,7 +132,7 @@ function stream(net, security, q) {
 	if (security == 'xtls') security = 'tls';
 
 	const sni = opt(q.sni, opt(q.serverName, q.peer));
-	let ss = { network: net, security: security, sockopt: { mark: RESERVED_MARK } };
+	let ss = { network: net, security: security };
 
 	if (security == 'tls')
 		ss.tlsSettings = {
@@ -110,7 +141,8 @@ function stream(net, security, q) {
 			fingerprint: q.fp,
 			alpn: q.alpn ? split(q.alpn, ',') : null
 		};
-	else if (security == 'reality')
+	else if (security == 'reality') {
+		if (!q.pbk) die('REALITY link has no public key (pbk)');
 		ss.realitySettings = {
 			serverName: sni,
 			fingerprint: opt(q.fp, 'chrome'),
@@ -118,6 +150,7 @@ function stream(net, security, q) {
 			shortId: q.sid,
 			spiderX: q.spx
 		};
+	}
 	else if (security != 'none')
 		die(`unsupported security "${security}"`);
 
@@ -154,11 +187,15 @@ function stream(net, security, q) {
 }
 
 function parse_vmess(link) {
-	const raw = b64(substr(link, 8));
+	let body = substr(link, 8);
+	let h = index(body, '#');
+	if (h >= 0) body = substr(body, 0, h);
+	const raw = b64(body);
 	if (raw == null) die('vmess link is not valid base64');
 	let j;
 	try { j = json(raw); } catch (e) { die('vmess link does not contain valid JSON'); }
-	if (!j.add || !j.port || !j.id) die('vmess link is missing address, port or id');
+	if (type(j) != 'object' || !j.add || !j.port || !j.id) die('vmess link is missing address, port or id');
+	if (!valid_port(`${j.port}`)) die('vmess link has an invalid port');
 	const sec = (j.tls == 'tls' || j.tls == 'reality') ? j.tls : 'none';
 	const q = {
 		headerType: j.type, host: j.host, path: j.path, serviceName: j.path,
@@ -167,14 +204,11 @@ function parse_vmess(link) {
 		mode: j.mode, pbk: j.pbk, sid: j.sid, spx: j.spx
 	};
 	return {
-		name: j.ps,
-		ob: {
-			protocol: 'vmess',
-			settings: { vnext: [ { address: j.add, port: int(j.port), users: [
-				{ id: j.id, alterId: int(opt(j.aid, 0)), security: opt(j.scy, 'auto') }
-			] } ] },
-			streamSettings: stream(j.net, sec, q)
-		}
+		protocol: 'vmess',
+		settings: { vnext: [ { address: j.add, port: int(j.port), users: [
+			{ id: j.id, alterId: int(opt(j.aid, 0)), security: opt(j.scy, 'auto') }
+		] } ] },
+		streamSettings: stream(j.net, sec, q)
 	};
 }
 
@@ -191,16 +225,13 @@ function parse_std(u) {
 			{ address: u.host, port: u.port, password: urldec(u.user) }
 		] } };
 	ob.streamSettings = stream(q.type, opt(q.security, (u.scheme == 'trojan') ? 'tls' : 'none'), q);
-	return { name: u.name, ob };
+	return ob;
 }
 
 function parse_ss(link) {
-	let body = substr(link, 5), name = null;
+	let body = substr(link, 5);
 	let h = index(body, '#');
-	if (h >= 0) {
-		name = urldec(substr(body, h + 1));
-		body = substr(body, 0, h);
-	}
+	if (h >= 0) body = substr(body, 0, h);
 	let qi = index(body, '?');
 	if (qi >= 0) {
 		if (parse_query(substr(body, qi + 1)).plugin)
@@ -226,14 +257,11 @@ function parse_ss(link) {
 	}
 	let c = index(cred, ':');
 	if (c <= 0) die('shadowsocks link has no method:password');
-	if (!hp) die('shadowsocks link has no host:port');
+	if (!hp) die('shadowsocks link has no valid host:port');
 	return {
-		name,
-		ob: {
-			protocol: 'shadowsocks',
-			settings: { servers: [ { address: hp.host, port: hp.port, method: substr(cred, 0, c), password: substr(cred, c + 1) } ] },
-			streamSettings: { network: 'tcp', sockopt: { mark: RESERVED_MARK } }
-		}
+		protocol: 'shadowsocks',
+		settings: { servers: [ { address: hp.host, port: hp.port, method: substr(cred, 0, c), password: substr(cred, c + 1) } ] },
+		streamSettings: { network: 'tcp' }
 	};
 }
 
@@ -243,10 +271,7 @@ function parse_link(link) {
 		let ob;
 		try { ob = json(link); } catch (e) { die('custom outbound is not valid JSON'); }
 		if (type(ob) != 'object' || !ob.protocol) die('custom outbound needs a "protocol" field');
-		ob.streamSettings ??= {};
-		ob.streamSettings.sockopt ??= {};
-		ob.streamSettings.sockopt.mark = RESERVED_MARK;
-		return { name: ob.tag, ob };
+		return ob;
 	}
 	let m = match(link, /^([a-zA-Z0-9]+):\/\//);
 	let scheme = m ? lc(m[1]) : '';
@@ -258,11 +283,19 @@ function parse_link(link) {
 	case 'vless':
 	case 'trojan':
 		let u = parse_url(link);
-		if (!u) die(`${scheme} link is not valid`);
+		if (!u) die(`${scheme} link has no valid host:port`);
 		return parse_std(u);
 	default:
 		die(`unsupported link type "${scheme || substr(link, 0, 10)}"`);
 	}
+}
+
+// Asks Xray whether it accepts this outbound on its own.
+function xray_accepts(ob) {
+	fs.writefile(CHECK, sprintf('%J', { log: { loglevel: 'none' }, outbounds: [ ob ] }));
+	const ok = system(`/usr/bin/xray run -test -c ${CHECK} >/dev/null 2>&1`) == 0;
+	fs.unlink(CHECK);
+	return ok;
 }
 
 function rule(fields, target) {
@@ -272,20 +305,53 @@ function rule(fields, target) {
 	return r;
 }
 
+function is_ipv4(v) {
+	let m = match(v, /^([0-9]+)[.]([0-9]+)[.]([0-9]+)[.]([0-9]+)(\/([0-9]+))?$/);
+	if (!m) return false;
+	for (let i = 1; i <= 4; i++)
+		if (int(m[i]) > 255) return false;
+	return m[6] == null || int(m[6]) <= 32;
+}
+
+function valid_ports(v) {
+	for (let p in split(v, ',')) {
+		let r = split(trim(p), '-');
+		if (length(r) > 2) return false;
+		for (let x in r)
+			if (!valid_port(x)) return false;
+	}
+	return true;
+}
+
+const DOMAIN_PREFIX = [ 'geosite', 'domain', 'full', 'keyword', 'regexp', 'ext', 'dotless' ];
+const IP_PREFIX = [ 'geoip', 'ext-ip' ];
+
 const main = uci.get_all('xraypanel', 'main') ?? {};
+const check_nodes = getenv('XP_CHECK_NODES') == '1';
 let warnings = [];
 let nodes = [];
 
 uci.foreach('xraypanel', 'node', (s) => {
 	if (!on(s.enabled, true) || !s.link) return;
+	const label = opt(s.label, s['.name']);
+	let ob;
 	try {
-		let r = parse_link(s.link);
-		r.ob.tag = 'node-' + s['.name'];
-		push(nodes, r.ob);
+		ob = parse_link(s.link);
 	}
 	catch (e) {
-		push(warnings, `Server "${opt(s.label, s['.name'])}" skipped: ${e.message}`);
+		push(warnings, `Server "${label}" skipped: ${e.message}`);
+		return;
 	}
+	ob.tag = 'node-' + s['.name'];
+	ob.streamSettings ??= {};
+	ob.streamSettings.sockopt ??= {};
+	// Server hostnames are resolved by the router itself, over IPv4.
+	ob.streamSettings.sockopt.domainStrategy ??= 'UseIPv4';
+	if (check_nodes && !xray_accepts(clean(ob))) {
+		push(warnings, `Server "${label}" skipped: Xray does not accept its settings`);
+		return;
+	}
+	push(nodes, ob);
 });
 
 if (!length(nodes)) {
@@ -297,22 +363,25 @@ if (!length(nodes)) {
 // Server hostnames must resolve without going through the proxy itself.
 let server_domains = [];
 function add_server(addr) {
-	if (addr && !match(addr, /^[0-9.]+$/) && index(addr, ':') < 0)
+	if (addr && !is_ipv4(addr) && index(addr, ':') < 0)
 		push(server_domains, 'full:' + addr);
 }
 for (let n in nodes) {
 	let st = n.settings ?? {};
 	for (let e in (st.vnext ?? [])) add_server(e.address);
 	for (let e in (st.servers ?? [])) add_server(e.address);
-	n.streamSettings ??= {};
-	n.streamSettings.sockopt ??= {};
-	n.streamSettings.sockopt.domainStrategy ??= 'UseIPv4';
 }
 
 let target;
 if (opt(main.mode, 'balance') == 'single' || length(nodes) == 1) {
 	const want = 'node-' + opt(main.node, '');
-	target = { outboundTag: length(filter(nodes, n => n.tag == want)) ? want : nodes[0].tag };
+	if (length(filter(nodes, n => n.tag == want)))
+		target = { outboundTag: want };
+	else {
+		target = { outboundTag: nodes[0].tag };
+		if (opt(main.mode, 'balance') == 'single')
+			push(warnings, 'The chosen server is missing, disabled or invalid, so the first usable server is used instead.');
+	}
 }
 else {
 	target = { balancerTag: 'balancer' };
@@ -320,6 +389,7 @@ else {
 
 const strategy = opt(main.strategy, 'leastPing');
 const probe_url = opt(main.probe_url, 'https://www.gstatic.com/generate_204');
+const dns_on = on(main.dns_enabled, true);
 const dns_remote = opt(main.dns_remote, '1.1.1.1');
 const dns_direct = opt(main.dns_direct, '8.8.8.8');
 
@@ -331,7 +401,7 @@ function outref(name) {
 let rules = [
 	rule({ inboundTag: [ 'api-in' ] }, { outboundTag: 'api' }),
 	...map(nodes, n => rule({ inboundTag: [ 'test-' + substr(n.tag, 5) ] }, { outboundTag: n.tag })),
-	rule({ inboundTag: [ 'dns-in' ] }, { outboundTag: 'dns-out' }),
+	dns_on ? rule({ inboundTag: [ 'dns-in' ] }, { outboundTag: 'dns-out' }) : null,
 	rule({ inboundTag: [ 'dns-internal' ], ip: [ dns_direct ] }, { outboundTag: 'direct' }),
 	rule({ inboundTag: [ 'dns-internal' ] }, target),
 	rule({ inboundTag: [ 'socks-in' ] }, target)
@@ -339,14 +409,34 @@ let rules = [
 
 uci.foreach('xraypanel', 'rule', (s) => {
 	if (!on(s.enabled, true)) return;
+	const label = opt(s.label, s['.name']);
 	let dom = [], ip = [], port = [];
 	for (let v in list(s.match)) {
 		v = trim(v);
 		if (v == '') continue;
-		if (match(v, /^port:/)) push(port, substr(v, 5));
-		else if (match(v, /^(geoip|ext-ip):/)) push(ip, v);
-		else if (match(v, /^[0-9.]+(\/[0-9]+)?$/) || match(v, /^[0-9a-fA-F]*:[0-9a-fA-F:]+(\/[0-9]+)?$/)) push(ip, v);
-		else push(dom, v);
+		let m = match(v, /^([a-z-]+):(.+)$/);
+		if (match(v, /^[0-9a-fA-F]*:[0-9a-fA-F:]+(\/[0-9]+)?$/))
+			push(ip, v);
+		else if (m && m[1] == 'port') {
+			if (valid_ports(m[2])) push(port, m[2]);
+			else push(warnings, `Rule "${label}": "${v}" is not a valid port or range, ignored`);
+		}
+		else if (m && index(IP_PREFIX, m[1]) >= 0)
+			push(ip, v);
+		else if (m && index(DOMAIN_PREFIX, m[1]) >= 0)
+			push(dom, v);
+		else if (m)
+			push(warnings, `Rule "${label}": unknown type "${m[1]}:" in "${v}", ignored`);
+		else if (match(v, /^[0-9.\/]+$/)) {
+			if (is_ipv4(v)) push(ip, v);
+			else push(warnings, `Rule "${label}": "${v}" is not a valid IPv4 address or range, ignored`);
+		}
+		else
+			push(dom, v);
+	}
+	if (!length(dom) && !length(ip) && !length(port)) {
+		push(warnings, `Rule "${label}" has nothing to match and was ignored`);
+		return;
 	}
 	const t = outref(opt(s.outbound, 'direct'));
 	if (length(dom)) push(rules, rule({ domain: dom }, t));
@@ -357,11 +447,11 @@ uci.foreach('xraypanel', 'rule', (s) => {
 push(rules, rule({ network: 'tcp,udp' }, (opt(main.default_out, 'proxy') == 'direct') ? { outboundTag: 'direct' } : target));
 
 let outbounds = [
-	{ tag: 'direct', protocol: 'freedom', streamSettings: { sockopt: { mark: RESERVED_MARK, domainStrategy: 'UseIPv4' } } }
+	{ tag: 'direct', protocol: 'freedom', streamSettings: { sockopt: { domainStrategy: 'UseIPv4' } } }
 ];
 for (let n in nodes) push(outbounds, n);
 push(outbounds, { tag: 'block', protocol: 'blackhole' });
-push(outbounds, { tag: 'dns-out', protocol: 'dns', streamSettings: { sockopt: { mark: RESERVED_MARK } } });
+if (dns_on) push(outbounds, { tag: 'dns-out', protocol: 'dns' });
 
 let balancers = null, observatory = null;
 if (target.balancerTag) {
@@ -397,16 +487,17 @@ const cfg = clean({
 		]
 	},
 	inbounds: [
-		{ tag: 'redir-in', port: 12345, protocol: 'dokodemo-door',
+		// Must listen on the LAN side for the nft redirect; firewall.sh drops direct connections to it.
+		{ tag: 'redir-in', port: PORT_REDIR, protocol: 'dokodemo-door',
 		  settings: { network: 'tcp', followRedirect: true },
 		  sniffing: { enabled: true, destOverride: [ 'http', 'tls' ] } },
-		{ tag: 'socks-in', listen: '127.0.0.1', port: 10808, protocol: 'socks', settings: { udp: false } },
-		{ tag: 'dns-in', listen: '127.0.0.1', port: 5353, protocol: 'dokodemo-door',
-		  settings: { address: dns_remote, port: 53, network: 'tcp,udp' } },
-		{ tag: 'api-in', listen: '127.0.0.1', port: 10085, protocol: 'dokodemo-door',
+		{ tag: 'socks-in', listen: '127.0.0.1', port: PORT_SOCKS, protocol: 'socks', settings: { udp: false } },
+		dns_on ? { tag: 'dns-in', listen: '127.0.0.1', port: PORT_DNS, protocol: 'dokodemo-door',
+		  settings: { address: dns_remote, port: 53, network: 'tcp,udp' } } : null,
+		{ tag: 'api-in', listen: '127.0.0.1', port: PORT_API, protocol: 'dokodemo-door',
 		  settings: { address: '127.0.0.1' } },
 		// One local socks port per server, used by the panel's "Test" button.
-		...map(nodes, (n, i) => ({ tag: 'test-' + substr(n.tag, 5), listen: '127.0.0.1', port: 10900 + i,
+		...map(nodes, (n, i) => ({ tag: 'test-' + substr(n.tag, 5), listen: '127.0.0.1', port: PORT_TEST + i,
 		  protocol: 'socks', settings: { udp: false } }))
 	],
 	outbounds,

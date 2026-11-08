@@ -6,9 +6,18 @@ import * as fs from 'fs';
 const RUN = '/var/run/xraypanel';
 const CFG = '/var/etc/xraypanel/config.json';
 
+function running() {
+	return system(`ubus call service list '{"name":"xraypanel"}' 2>/dev/null | grep -q '"running": true'`) == 0;
+}
+
+// Single-quotes a value for the shell.
+function shq(s) {
+	return "'" + replace(`${s}`, "'", "'\\''") + "'";
+}
+
 let cfg = null;
 try { cfg = json(fs.readfile(CFG) ?? ''); } catch (e) {}
-if (!cfg || system('pidof xray >/dev/null') != 0) {
+if (!cfg || !running()) {
 	print('ERROR: Xray is not running\n');
 	exit(0);
 }
@@ -23,9 +32,10 @@ let names = [];
 for (let ib in cfg.inbounds) {
 	if (substr(ib.tag, 0, 5) != 'test-') continue;
 	const name = substr(ib.tag, 5);
+	if (!match(name, /^[A-Za-z0-9_]+$/)) continue;
 	push(names, name);
-	cmd += sprintf("(curl -s -o /dev/null -m 10 -w '%%{http_code} %%{time_total}' -x socks5h://127.0.0.1:%d '%s' > %s/t-%s 2>/dev/null) & ",
-		ib.port, url, RUN, name);
+	cmd += sprintf("(curl -s -o /dev/null -m 10 -w '%%{http_code} %%{time_total}' -x socks5h://127.0.0.1:%d %s > %s/t-%s 2>/dev/null) & ",
+		int(ib.port), shq(url), RUN, name);
 }
 system(cmd + 'wait');
 

@@ -2,6 +2,12 @@
 'require view';
 'require form';
 'require uci';
+'require tools.widgets as widgets';
+
+function checkUrl(section_id, value) {
+	if (!value) return true;
+	return /^https?:\/\/[^\s\/]+(\/\S*)?$/.test(value) || _('Enter a full http:// or https:// address');
+}
 
 return view.extend({
 	load: function() {
@@ -16,9 +22,11 @@ return view.extend({
 		s = m.section(form.NamedSection, 'main', 'main', _('Network'));
 		s.addremove = false;
 
-		o = s.option(form.DynamicList, 'lan_ifaces', _('Interfaces to route'),
-			_('Only clients on these interfaces go through Xray. Leave other networks (for example a direct-only Wi-Fi) out of this list.'));
-		o.placeholder = 'br-lan';
+		o = s.option(widgets.DeviceSelect, 'lan_ifaces', _('Interfaces to route'),
+			_('Only clients on these network devices go through Xray (usually br-lan). Leave other networks (for example a direct-only Wi-Fi) out. If none is chosen, br-lan is used.'));
+		o.multiple = true;
+		o.noaliases = true;
+		o.nocreate = true;
 
 		o = s.option(form.DynamicList, 'bypass_src', _('Devices that stay direct'),
 			_('IP addresses or ranges that never go through Xray.'));
@@ -49,8 +57,9 @@ return view.extend({
 		s.addremove = false;
 
 		o = s.option(form.Value, 'probe_url', _('Probe URL'),
-			_('Used for the latency test and the automatic fail-open check.'));
+			_('Used for the latency test and the automatic fail-open check. It must answer with HTTP 200-399.'));
 		o.placeholder = 'https://www.gstatic.com/generate_204';
+		o.validate = checkUrl;
 
 		s = m.section(form.NamedSection, 'main', 'main', _('Geo files'));
 		s.addremove = false;
@@ -63,10 +72,12 @@ return view.extend({
 
 		o = s.option(form.Value, 'geoip_url', _('geoip.dat URL'));
 		o.rmempty = false;
+		o.validate = checkUrl;
 
 		o = s.option(form.Value, 'geosite_url', _('geosite.dat URL'),
-			_('The lite files are small and only include ir, private and ads. Use the full files if your rules need more categories (they use more memory).'));
+			_('The lite files are small and only include ir, category-ir, private and ads. Use the full files if your rules need more categories (they use more memory). After changing a URL, press "Update geo files" on the Status page.'));
 		o.rmempty = false;
+		o.validate = checkUrl;
 
 		s = m.section(form.NamedSection, 'main', 'main', _('Logging'));
 		s.addremove = false;

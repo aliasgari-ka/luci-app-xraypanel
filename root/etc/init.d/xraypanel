@@ -4,23 +4,24 @@ USE_PROCD=1
 START=95
 STOP=10
 
-RUN=/var/run/xraypanel
-CONF=/var/etc/xraypanel/config.json
-NEXT=/var/etc/xraypanel/next.json
-ASSET=/usr/share/xraypanel/geo
+. /usr/share/xraypanel/common.sh
+
+NEXT=$XP_ETC/next.json
+FW=$XP_DIR/firewall.sh
 CRON=/etc/crontabs/root
 
+# cron_update on|off [daily|weekly|off]
 cron_update() {
-	local geo="$1" tmp
+	local state="$1" geo="$2" tmp
 	tmp=$(mktemp)
 	mkdir -p /etc/crontabs
 	touch "$CRON"
 	grep -v '# xraypanel$' "$CRON" > "$tmp"
-	if [ -n "$geo" ]; then
-		echo '* * * * * /usr/share/xraypanel/watchdog.sh # xraypanel' >> "$tmp"
+	if [ "$state" = on ]; then
+		echo "* * * * * $XP_DIR/watchdog.sh # xraypanel" >> "$tmp"
 		case "$geo" in
-			daily) echo '30 4 * * * /usr/share/xraypanel/geoupdate.sh >/dev/null 2>&1 # xraypanel' >> "$tmp" ;;
-			weekly) echo '30 4 * * 5 /usr/share/xraypanel/geoupdate.sh >/dev/null 2>&1 # xraypanel' >> "$tmp" ;;
+			daily) echo "30 4 * * * $XP_DIR/geoupdate.sh >/dev/null 2>&1 # xraypanel" >> "$tmp" ;;
+			weekly) echo "30 4 * * 5 $XP_DIR/geoupdate.sh >/dev/null 2>&1 # xraypanel" >> "$tmp" ;;
 		esac
 	fi
 	if ! cmp -s "$tmp" "$CRON"; then
@@ -31,8 +32,43 @@ cron_update() {
 }
 
 fail() {
-	echo "$1" > "$RUN/error"
+	echo "$1" > "$XP_RUN/error"
 	logger -t xraypanel "$1"
+}
+
+xray_test() {
+	XRAY_LOCATION_ASSET="$XP_ASSET" /usr/bin/xray run -test -c "$NEXT" > "$XP_RUN/test.log" 2>&1
+}
+
+generate() {
+	env "$@" /usr/bin/ucode "$XP_DIR/gen.uc" > "$NEXT" 2> "$XP_RUN/gen.log" && return 0
+	fail "Configuration error: $(cat "$XP_RUN/gen.log")"
+	return 1
+}
+
+# Writes a tested config to $NEXT. Returns 1 (with $XP_RUN/error set) if there is none.
+build_config() {
+	if [ ! -s "$XP_ASSET/geoip.dat" ] || [ ! -s "$XP_ASSET/geosite.dat" ]; then
+		fail 'Geo files are missing. Press "Update geo files" on the Status page.'
+		return 1
+	fi
+
+	generate || return 1
+	if ! xray_test; then
+		# Test each server on its own so one bad server does not take the others down.
+		generate XP_CHECK_NODES=1 || return 1
+		if ! xray_test; then
+			local msg hint=""
+			msg=$(grep -v '^Xray \|^A unified' "$XP_RUN/test.log" | tail -n 5)
+			echo "$msg" | grep -qi 'geosite\|geoip' &&
+				hint=" A routing rule probably uses a geosite/geoip category the geo files do not have (the lite files only have ir, category-ir, private and ads)."
+			fail "Xray rejected the configuration:$hint
+$msg"
+			return 1
+		fi
+	fi
+	[ -s "$XP_RUN/gen.log" ] && cp "$XP_RUN/gen.log" "$XP_RUN/warnings"
+	return 0
 }
 
 start_service() {
@@ -42,47 +78,52 @@ start_service() {
 	config_get_bool enabled main enabled 0
 	config_get geo main geo_update weekly
 
-	mkdir -p "$RUN" /var/etc/xraypanel
-	rm -f "$RUN/error" "$RUN/warnings"
+	mkdir -p "$XP_RUN" "$XP_ETC"
+	rm -f "$XP_RUN/error" "$XP_RUN/warnings" "$XP_RUN/fails"
 
 	if [ "$enabled" != 1 ]; then
-		cron_update ""
-		/usr/share/xraypanel/firewall.sh stop
+		cron_update off
+		$FW stop
+		$FW unguard
 		return 0
 	fi
 
-	if ! /usr/bin/ucode /usr/share/xraypanel/gen.uc > "$NEXT" 2> "$RUN/gen.log"; then
-		fail "Configuration error: $(cat "$RUN/gen.log")"
+	cron_update on "$geo"
+
+	if build_config; then
+		mv "$NEXT" "$XP_CONF"
+	elif [ -s "$XP_CONF" ] && xp_running; then
+		# Keep the last working config running instead of cutting the proxy.
+		echo "Xray keeps running with the previous working settings until this is fixed." >> "$XP_RUN/error"
+	else
+		$FW stop
 		return 1
 	fi
-	[ -s "$RUN/gen.log" ] && cp "$RUN/gen.log" "$RUN/warnings"
 
-	if ! XRAY_LOCATION_ASSET="$ASSET" /usr/bin/xray run -test -c "$NEXT" > "$RUN/test.log" 2>&1; then
-		fail "Xray rejected the configuration: $(grep -v '^Xray \|^A unified' "$RUN/test.log" | tail -n 5)"
-		return 1
-	fi
-	mv "$NEXT" "$CONF"
-
-	cron_update "$geo"
+	$FW guard
 
 	procd_open_instance xray
-	procd_set_param command /usr/bin/xray run -c "$CONF"
-	procd_set_param env XRAY_LOCATION_ASSET="$ASSET" GOMEMLIMIT=48MiB GOGC=50
+	procd_set_param command /usr/bin/xray run -c "$XP_CONF"
+	procd_set_param file "$XP_CONF"
+	procd_set_param env XRAY_LOCATION_ASSET="$XP_ASSET" GOMEMLIMIT=48MiB GOGC=50
+	# Restart 5 s after a crash, forever; the watchdog keeps LAN direct meanwhile.
 	procd_set_param respawn 3600 5 0
 	procd_set_param stdout 1
 	procd_set_param stderr 1
 	procd_close_instance
 
-	( sleep 4; /usr/share/xraypanel/watchdog.sh ) >/dev/null 2>&1 &
+	if [ -f "$XP_RUN/active" ]; then
+		# Apply changed interface, bypass, QUIC or DNS settings right away.
+		$FW start
+	else
+		# First proxy check shortly after Xray is up, instead of waiting for cron.
+		( sleep 4; $XP_DIR/watchdog.sh ) >/dev/null 2>&1 &
+	fi
 }
 
 stop_service() {
-	/usr/share/xraypanel/firewall.sh stop
-}
-
-reload_service() {
-	stop
-	start
+	$FW stop
+	$FW unguard
 }
 
 service_triggers() {
