@@ -211,7 +211,9 @@ return view.extend({
 				fmtKB(st.rss_kb),
 				_('Xray %s').format(st.version || '-')),
 			card(_('Geo files'),
-				fmtBytes(st.geo ? st.geo.geosite : null),
+				// All geo files together, including the optional extra geosite file.
+				fmtBytes(st.geo && st.geo.geosite != null
+					? (st.geo.geoip || 0) + st.geo.geosite + (st.geo.geosite_extra || 0) : null),
 				_('updated %s').format(fmtAgo(st.geo_updated, now)))
 		]);
 	},

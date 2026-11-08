@@ -102,7 +102,7 @@ for (let s in servers) {
 }
 
 let geo = {};
-for (let k in [ 'geoip', 'geosite' ]) {
+for (let k in [ 'geoip', 'geosite', 'geosite_extra' ]) {
 	let st = fs.stat(`${GEO}/${k}.dat`);
 	geo[k] = st ? st.size : null;
 }
