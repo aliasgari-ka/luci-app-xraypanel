@@ -2,6 +2,8 @@
 'require view';
 'require form';
 'require uci';
+'require fs';
+'require ui';
 
 function b64(s) {
 	s = s.replace(/-/g, '+').replace(/_/g, '/').replace(/=+$/, '');
@@ -79,11 +81,28 @@ function checkLink(value) {
 
 return view.extend({
 	load: function() {
-		return uci.load('xraypanel');
+		return Promise.all([
+			uci.load('xraypanel'),
+			L.resolveDefault(fs.exec_direct('/usr/share/xraypanel/status.sh', [], 'json'), {})
+		]);
 	},
 
-	render: function() {
+	testAll: function() {
+		return fs.exec_direct('/usr/share/xraypanel/ctl.sh', [ 'test' ]).then(function(out) {
+			out = (out || '').trim();
+			ui.addNotification(null, E('p', out.replace(/^(OK|ERROR):\s*/, '')), /^ERROR/.test(out) ? 'error' : 'info');
+			window.setTimeout(function() { location.reload(); }, 800);
+		}).catch(function(e) {
+			ui.addNotification(null, E('p', e.message), 'error');
+		});
+	},
+
+	render: function(data) {
 		var m, s, o;
+		var st = data[1] || {};
+		var tests = {}, inUse = {};
+		(st.servers || []).forEach(function(n) { tests[n.name] = n.test; });
+		(st.in_use || []).forEach(function(n) { inUse[n] = true; });
 
 		m = new form.Map('xraypanel', _('Xray servers'),
 			_('Add one or more servers. With load balancing, Xray tests every enabled server and uses the fastest one; if it fails, traffic moves to the next.'));
@@ -164,6 +183,18 @@ return view.extend({
 			return summary(uci.get('xraypanel', section_id, 'link'));
 		};
 
+		o = s.option(form.DummyValue, '_latency', _('Latency'));
+		o.modalonly = false;
+		o.rawhtml = true;
+		o.textvalue = function(section_id) {
+			var t = tests[section_id];
+			var use = inUse[section_id] ? ' <span style="color:#2e7d32;font-weight:600">● ' + _('in use') + '</span>' : '';
+			if (!t) return '<span style="opacity:.6">' + _('not tested') + '</span>' + use;
+			if (!t.ok) return '<span style="color:#c62828;font-weight:600">' + _('no answer') + '</span>' + use;
+			var c = t.ms < 400 ? '#2e7d32' : t.ms < 1000 ? '#ef6c00' : '#c62828';
+			return '<span style="color:' + c + ';font-weight:600">' + t.ms + ' ms</span>' + use;
+		};
+
 		o = s.option(form.TextValue, 'link', _('Share link'),
 			_('vmess://, vless://, trojan://, ss:// or a complete Xray outbound as JSON.'));
 		o.rows = 5;
@@ -171,6 +202,18 @@ return view.extend({
 		o.rmempty = false;
 		o.validate = function(section_id, value) { return checkLink(value); };
 
-		return m.render();
+		var self = this;
+		return m.render().then(function(node) {
+			var grid = node.querySelector('.cbi-section[id$="-node"]') || node.lastElementChild;
+			grid.insertBefore(E('div', { 'style': 'margin:0 0 8px' }, [
+				E('button', {
+					'class': 'cbi-button cbi-button-action',
+					'click': ui.createHandlerFn(self, 'testAll')
+				}, _('Test all servers')),
+				' ',
+				E('span', { 'style': 'opacity:.7' }, _('Tests the saved servers. Save & Apply new ones first.'))
+			]), grid.firstChild);
+			return node;
+		});
 	}
 });

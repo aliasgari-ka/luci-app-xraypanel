@@ -330,6 +330,7 @@ function outref(name) {
 
 let rules = [
 	rule({ inboundTag: [ 'api-in' ] }, { outboundTag: 'api' }),
+	...map(nodes, n => rule({ inboundTag: [ 'test-' + substr(n.tag, 5) ] }, { outboundTag: n.tag })),
 	rule({ inboundTag: [ 'dns-in' ] }, { outboundTag: 'dns-out' }),
 	rule({ inboundTag: [ 'dns-internal' ], ip: [ dns_direct ] }, { outboundTag: 'direct' }),
 	rule({ inboundTag: [ 'dns-internal' ] }, target),
@@ -384,7 +385,8 @@ const cfg = clean({
 		loglevel: opt(main.loglevel, 'warning'),
 		access: on(main.access_log, false) ? null : 'none'
 	},
-	api: { tag: 'api', services: [ 'RoutingService' ] },
+	api: { tag: 'api', services: [ 'RoutingService', 'StatsService' ] },
+	stats: {},
 	dns: {
 		tag: 'dns-internal',
 		queryStrategy: 'UseIPv4',
@@ -402,12 +404,16 @@ const cfg = clean({
 		{ tag: 'dns-in', listen: '127.0.0.1', port: 5353, protocol: 'dokodemo-door',
 		  settings: { address: dns_remote, port: 53, network: 'tcp,udp' } },
 		{ tag: 'api-in', listen: '127.0.0.1', port: 10085, protocol: 'dokodemo-door',
-		  settings: { address: '127.0.0.1' } }
+		  settings: { address: '127.0.0.1' } },
+		// One local socks port per server, used by the panel's "Test" button.
+		...map(nodes, (n, i) => ({ tag: 'test-' + substr(n.tag, 5), listen: '127.0.0.1', port: 10900 + i,
+		  protocol: 'socks', settings: { udp: false } }))
 	],
 	outbounds,
 	routing: { domainStrategy: 'IPIfNonMatch', rules, balancers },
 	observatory,
-	policy: { levels: { '0': { handshake: 4, connIdle: 300, uplinkOnly: 1, downlinkOnly: 1, bufferSize: 64 } } }
+	policy: { levels: { '0': { handshake: 4, connIdle: 300, uplinkOnly: 1, downlinkOnly: 1, bufferSize: 64 } },
+		system: { statsOutboundUplink: true, statsOutboundDownlink: true } }
 });
 
 print(sprintf('%J', cfg), '\n');

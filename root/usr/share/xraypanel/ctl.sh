@@ -13,6 +13,9 @@ case "$1" in
 	geo)
 		/usr/share/xraypanel/geoupdate.sh
 		;;
+	test)
+		/usr/bin/ucode /usr/share/xraypanel/test.uc
+		;;
 	*)
 		echo "ERROR: unknown action"
 		;;

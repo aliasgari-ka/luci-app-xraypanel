@@ -16,7 +16,8 @@
 			"cgi-io": [ "exec" ],
 			"file": {
 				"/usr/share/xraypanel/ctl.sh restart": [ "exec" ],
-				"/usr/share/xraypanel/ctl.sh geo": [ "exec" ]
+				"/usr/share/xraypanel/ctl.sh geo": [ "exec" ],
+				"/usr/share/xraypanel/ctl.sh test": [ "exec" ]
 			},
 			"ubus": {
 				"file": [ "exec" ]
