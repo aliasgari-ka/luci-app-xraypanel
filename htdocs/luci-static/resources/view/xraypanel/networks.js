@@ -51,7 +51,8 @@ function routes() {
 			name: s['.name'],
 			device: s.device,
 			addr: s.ipaddr || '',
-			proxied: prox.indexOf(s.device) > -1
+			// lan_ifaces may hold device names (br-lan) or network names (lan).
+			proxied: prox.indexOf(s.device) > -1 || prox.indexOf(s['.name']) > -1
 		};
 	});
 }
