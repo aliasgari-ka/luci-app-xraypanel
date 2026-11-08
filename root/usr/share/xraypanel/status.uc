@@ -7,8 +7,10 @@ const RUN = '/var/run/xraypanel';
 const GEO = '/usr/share/xraypanel/geo';
 const CONF = '/var/etc/xraypanel/config.json';
 const CACHE = `${RUN}/status-cache.json`;
-// The panel polls every 5 s; the xray CLI calls below are refreshed at most this often.
+// The panel polls every 5 s; Xray's counters are refreshed at most this often.
 const CACHE_SECONDS = 15;
+// Keep in sync with gen.uc.
+const PORT_METRICS = 10085;
 
 function rd(p) {
 	let s = fs.readfile(p);
@@ -74,20 +76,16 @@ uci.foreach('xraypanel', 'node', (s) => {
 let cache = null;
 try { cache = json(rd(CACHE) || 'null'); } catch (e) {}
 if (!pid || !cache || cache.pid != pid || time() - (cache.at ?? 0) >= CACHE_SECONDS) {
-	cache = { pid, at: time(), version: cache?.version, traffic: {}, balancer: null };
+	cache = { pid, at: time(), version: cache?.version, traffic: {}, observatory: null };
 	if (!cache.version)
 		cache.version = sh("/usr/bin/xray version 2>/dev/null | head -n1 | cut -d' ' -f2");
 	if (pid) {
-		let q = null;
-		try { q = json(sh('/usr/bin/xray api statsquery --server=127.0.0.1:10085 -pattern "outbound>>>" 2>/dev/null') || '{}'); } catch (e) {}
-		for (let st in (q?.stat ?? [])) {
-			let m = match(st.name, /^outbound>>>(.+)>>>traffic>>>(uplink|downlink)$/);
-			if (!m) continue;
-			cache.traffic[m[1]] ??= { up: 0, down: 0 };
-			cache.traffic[m[1]][m[2] == 'uplink' ? 'up' : 'down'] = +(st.value ?? 0);
-		}
-		if (target == 'balancer')
-			cache.balancer = sh('/usr/bin/xray api bi -json --server=127.0.0.1:10085 balancer 2>/dev/null');
+		// Xray's metrics endpoint (see gen.uc): a small HTTP fetch instead of starting the xray CLI.
+		let v = null;
+		try { v = json(sh(`uclient-fetch -q -T 3 -O - http://127.0.0.1:${PORT_METRICS}/debug/vars 2>/dev/null`) || 'null'); } catch (e) {}
+		for (let tag, t in (v?.stats?.outbound ?? {}))
+			cache.traffic[tag] = { up: +(t.uplink ?? 0), down: +(t.downlink ?? 0) };
+		cache.observatory = v?.observatory;
 	}
 	fs.writefile(CACHE, sprintf('%J', cache));
 }
@@ -111,12 +109,15 @@ for (let k in [ 'geoip', 'geosite' ]) {
 
 let in_use = [];
 if (target == 'balancer') {
-	// { "balancer": { "override": {...}, "principleTarget": { "tag": [ "node-x" ] } } }
-	let bi = null;
-	try { bi = json(cache.balancer || 'null'); } catch (e) {}
-	const over = bi?.balancer?.override?.target;
-	for (let t in (over ? [ over ] : (bi?.balancer?.principleTarget?.tag ?? [])))
-		if (substr(t, 0, 5) == 'node-') push(in_use, substr(t, 5));
+	// Same choice the balancer makes from the observatory: { "node-x": { "alive": true, "delay": 120 } }.
+	const bal = conf?.routing?.balancers?.[0];
+	let alive = [];
+	for (let tag, o in (cache.observatory ?? {}))
+		if (o?.alive && substr(tag, 0, 5) == 'node-') push(alive, [ tag, +(o.delay ?? 0) ]);
+	if (bal?.strategy?.type == 'leastPing' && length(alive))
+		alive = [ sort(alive, (a, b) => a[1] - b[1])[0] ];
+	for (let t in (length(alive) ? map(alive, a => a[0]) : [ bal?.fallbackTag ]))
+		if (t && substr(t, 0, 5) == 'node-') push(in_use, substr(t, 5));
 }
 else if (target && substr(target, 0, 5) == 'node-') {
 	push(in_use, substr(target, 5));
@@ -138,7 +139,6 @@ print(sprintf('%J', {
 	geo,
 	geo_updated: int(rd(`${GEO}/updated`) || 0),
 	now: time(),
-	balancer: cache.balancer,
 	mode,
 	strategy: uci.get('xraypanel', 'main', 'strategy') ?? 'leastPing',
 	servers,

@@ -14,7 +14,7 @@ uci.load('xraypanel');
 const PORT_REDIR = 12345;
 const PORT_SOCKS = 10808;
 const PORT_DNS = 5353;
-const PORT_API = 10085;
+const PORT_METRICS = 10085;
 const PORT_TEST = 10900;
 const CHECK = '/var/etc/xraypanel/check.json';
 
@@ -500,7 +500,6 @@ function portspec(v, what, label) {
 }
 
 let rules = [
-	rule({ inboundTag: [ 'api-in' ] }, { outboundTag: 'api' }),
 	...map(nodes, n => rule({ inboundTag: [ 'test-' + substr(n.tag, 5) ] }, { outboundTag: n.tag })),
 	dns_on ? rule({ inboundTag: [ 'dns-in' ] }, { outboundTag: 'dns-out' }) : null,
 	rule({ inboundTag: [ 'dns-internal' ], ip: [ dns_direct ] }, { outboundTag: 'direct' }),
@@ -609,7 +608,9 @@ const cfg = clean({
 		loglevel: opt(main.loglevel, 'warning'),
 		access: on(main.access_log, false) ? null : 'none'
 	},
-	api: { tag: 'api', services: [ 'RoutingService', 'StatsService' ] },
+	// Traffic counters and observatory results over plain HTTP (/debug/vars), so status.uc
+	// does not have to start the 30 MB xray binary for every API call.
+	metrics: { tag: 'metrics', listen: `127.0.0.1:${PORT_METRICS}` },
 	stats: {},
 	dns: {
 		tag: 'dns-internal',
@@ -628,8 +629,6 @@ const cfg = clean({
 		{ tag: 'socks-in', listen: '127.0.0.1', port: PORT_SOCKS, protocol: 'socks', settings: { udp: false } },
 		dns_on ? { tag: 'dns-in', listen: '127.0.0.1', port: PORT_DNS, protocol: 'dokodemo-door',
 		  settings: { address: dns_remote, port: 53, network: 'tcp,udp' } } : null,
-		{ tag: 'api-in', listen: '127.0.0.1', port: PORT_API, protocol: 'dokodemo-door',
-		  settings: { address: '127.0.0.1' } },
 		// One local socks port per server, used by the panel's "Test" button.
 		...map(nodes, (n, i) => ({ tag: 'test-' + substr(n.tag, 5), listen: '127.0.0.1', port: PORT_TEST + i,
 		  protocol: 'socks', settings: { udp: false } }))
@@ -637,7 +636,8 @@ const cfg = clean({
 	outbounds,
 	routing: { domainStrategy: 'IPIfNonMatch', rules, balancers },
 	observatory,
-	policy: { levels: { '0': { handshake: 4, connIdle: 300, uplinkOnly: 1, downlinkOnly: 1, bufferSize: 64 } },
+	// No bufferSize: Xray's arm64 default (4 KB per connection) instead of 64 KB.
+	policy: { levels: { '0': { handshake: 4, connIdle: 180, uplinkOnly: 1, downlinkOnly: 1 } },
 		system: { statsOutboundUplink: true, statsOutboundDownlink: true } }
 });
 
