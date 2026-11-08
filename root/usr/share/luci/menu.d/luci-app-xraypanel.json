@@ -27,9 +27,17 @@
 			"path": "xraypanel/nodes"
 		}
 	},
+	"admin/services/xraypanel/networks": {
+		"title": "Wi-Fi",
+		"order": 3,
+		"action": {
+			"type": "view",
+			"path": "xraypanel/networks"
+		}
+	},
 	"admin/services/xraypanel/rules": {
 		"title": "Routing",
-		"order": 3,
+		"order": 4,
 		"action": {
 			"type": "view",
 			"path": "xraypanel/rules"
@@ -37,7 +45,7 @@
 	},
 	"admin/services/xraypanel/settings": {
 		"title": "Settings",
-		"order": 4,
+		"order": 5,
 		"action": {
 			"type": "view",
 			"path": "xraypanel/settings"

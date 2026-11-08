@@ -8,9 +8,13 @@
 				"/sbin/logread -l 400 -e xray": [ "exec" ]
 			},
 			"ubus": {
-				"file": [ "exec" ]
+				"file": [ "exec" ],
+				"iwinfo": [ "assoclist", "info" ],
+				"luci-rpc": [ "getWirelessDevices", "getNetworkDevices", "getBoardJSON", "getHostHints" ],
+				"network.interface": [ "dump" ],
+				"network": [ "get_proto_handlers" ]
 			},
-			"uci": [ "xraypanel" ]
+			"uci": [ "xraypanel", "wireless", "network", "firewall", "dhcp" ]
 		},
 		"write": {
 			"cgi-io": [ "exec" ],
@@ -22,7 +26,7 @@
 			"ubus": {
 				"file": [ "exec" ]
 			},
-			"uci": [ "xraypanel" ]
+			"uci": [ "xraypanel", "wireless", "network", "firewall", "dhcp" ]
 		}
 	}
 }
