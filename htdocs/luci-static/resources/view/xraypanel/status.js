@@ -186,7 +186,8 @@ return view.extend({
 		var proxyTotal = proxyDown + proxyUp;
 		var share = (proxyTotal + directTotal) ? Math.round(proxyTotal * 100 / (proxyTotal + directTotal)) : 0;
 
-		var mode = st.mode == 'single' || (st.nodes || 0) < 2
+		var mode = st.backup ? _('one server with backup')
+			: st.mode == 'single' || (st.nodes || 0) < 2
 			? _('one server')
 			: _('balancing, %s').format(STRATEGY[st.strategy] || st.strategy);
 

@@ -141,6 +141,7 @@ print(sprintf('%J', {
 	now: time(),
 	mode,
 	strategy: uci.get('xraypanel', 'main', 'strategy') ?? 'leastPing',
+	backup: target == 'balancer' && mode == 'single',
 	servers,
 	in_use,
 	direct: traffic['direct'] ?? { up: 0, down: 0 },

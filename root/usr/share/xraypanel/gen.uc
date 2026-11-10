@@ -398,7 +398,7 @@ for (let n in nodes) {
 	if (type(st.address) == 'string') add_server(st.address);
 }
 
-let target;
+let target, backup = null;
 if (opt(main.mode, 'balance') == 'single' || length(nodes) == 1) {
 	const want = 'node-' + opt(main.node, '');
 	if (length(filter(nodes, n => n.tag == want)))
@@ -407,6 +407,16 @@ if (opt(main.mode, 'balance') == 'single' || length(nodes) == 1) {
 		target = { outboundTag: nodes[0].tag };
 		if (opt(main.mode, 'balance') == 'single')
 			push(warnings, 'The chosen server is missing, disabled or invalid, so the first usable server is used instead.');
+	}
+	const bk = opt(main.backup, '');
+	if (bk != '') {
+		if (length(filter(nodes, n => n.tag == 'node-' + bk)) && 'node-' + bk != target.outboundTag) {
+			// Main server only, the backup takes over once the observatory marks the main one dead.
+			backup = { main: target.outboundTag, spare: 'node-' + bk };
+			target = { balancerTag: 'balancer' };
+		}
+		else
+			push(warnings, 'The backup server is missing, disabled, invalid or the same as the main server, so there is no backup.');
 	}
 }
 else {
@@ -597,15 +607,17 @@ if (dns_on) push(outbounds, { tag: 'dns-out', protocol: 'dns' });
 
 let balancers = null, observatory = null;
 if (target.balancerTag) {
+	// Selectors are prefixes; a backup pair names the main server exactly.
+	const sel = backup ? [ backup.main ] : [ 'node-' ];
 	balancers = [ {
 		tag: 'balancer',
-		selector: [ 'node-' ],
-		strategy: { type: strategy },
-		fallbackTag: nodes[0].tag
+		selector: sel,
+		strategy: { type: backup ? 'leastPing' : strategy },
+		fallbackTag: backup ? backup.spare : nodes[0].tag
 	} ];
 	// Xray needs the observatory for every strategy once fallbackTag is set.
 	observatory = {
-		subjectSelector: [ 'node-' ],
+		subjectSelector: sel,
 		probeUrl: probe_url,
 		probeInterval: `${probe_interval}s`,
 		enableConcurrency: true

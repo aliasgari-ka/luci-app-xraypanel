@@ -202,6 +202,18 @@ return view.extend({
 			o.value(n['.name'], n.label || summary(n.link));
 		});
 
+		o = s.option(form.ListValue, 'backup', _('Backup server'),
+			_('Used only while the main server does not answer the latency test; traffic returns to the main server once it answers again.'));
+		o.depends('mode', 'single');
+		o.value('', _('None'));
+		uci.sections('xraypanel', 'node').forEach(function(n) {
+			o.value(n['.name'], n.label || summary(n.link));
+		});
+		o.validate = function(section_id, value) {
+			var main = this.section.formvalue(section_id, 'node');
+			return (value && value == main) ? _('Pick a different server than the main one') : true;
+		};
+
 		o = s.option(form.ListValue, 'strategy', _('Balancing method'));
 		o.value('leastPing', _('Lowest latency'));
 		o.value('roundRobin', _('Round robin'));
@@ -214,6 +226,7 @@ return view.extend({
 		o.default = '60';
 		o.placeholder = '60';
 		o.depends('mode', 'balance');
+		o.depends('mode', 'single');
 
 		o = s.option(form.TextValue, '_import', _('Add servers from links'),
 			_('Paste one or more share links, one per line (or one JSON outbound), then press Save & Apply. Links that are already in the list are skipped.'));
