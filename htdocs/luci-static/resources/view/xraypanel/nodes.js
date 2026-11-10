@@ -36,7 +36,7 @@ function summary(link) {
 	var proto = m[1].toLowerCase();
 	if (proto == 'vmess') {
 		var j = vmessJson(link);
-		if (!j) return 'vmess ' + _('(unreadable)');
+		if (!j) return _('%s (unreadable)').format('vmess');
 		return 'vmess ' + j.add + ':' + j.port + ' ' + (j.net || 'tcp') + (j.tls && j.tls != 'none' ? '+' + j.tls : '');
 	}
 	var rest = m[2].replace(/#.*$/, '');
@@ -141,12 +141,40 @@ function checkLink(value) {
 
 // Anonymous UCI sections are renamed when a section above them is deleted, which would break
 // main.node, rule outbounds (node-<name>) and test results, so servers get fixed names.
+// Fixed width, so no name is the start of another one: Xray selectors match tag prefixes.
 var nameSeq = 0;
 function nodeName() {
 	var name;
-	do name = 'n' + Date.now().toString(36) + (nameSeq++).toString(36);
+	do name = 'n' + Date.now().toString(36) + ('00' + (nameSeq++ % 1296).toString(36)).slice(-2);
 	while (uci.get('xraypanel', name));
 	return name;
+}
+
+// gen.uc skips servers that are turned off or have no link. The grid's "On" box may not be saved yet.
+function nodeUsable(map, sid) {
+	var o = map.lookupOption('enabled', sid);
+	var on = o ? o[0].formvalue(sid) : uci.get('xraypanel', sid, 'enabled');
+	return on != '0' && !!uci.get('xraypanel', sid, 'link');
+}
+
+// The server lists are filled when the widget is drawn, so servers added or deleted in the grid
+// below show up without reloading the page. A saved value that names a deleted server is removed.
+function serverChoices(o, none) {
+	o.renderWidget = function(section_id, option_index, cfgvalue) {
+		this.keylist = [];
+		this.vallist = [];
+		if (none) this.value('', none);
+		uci.sections('xraypanel', 'node').forEach(function(n) {
+			var label = n.label || summary(n.link);
+			this.value(n['.name'], (n.enabled == '0' || !n.link) ? _('%s (off)').format(label) : label);
+		}, this);
+		return form.ListValue.prototype.renderWidget.apply(this, arguments);
+	};
+	o.write = function(section_id, value) {
+		if (value && !uci.get('xraypanel', value))
+			return this.remove(section_id);
+		return form.ListValue.prototype.write.apply(this, arguments);
+	};
 }
 
 // The import box takes one link per line, or a single JSON outbound (which may span lines).
@@ -165,22 +193,33 @@ return view.extend({
 		]);
 	},
 
+	// Updates the latency column in place: reloading the page would drop unsaved edits.
 	testAll: function() {
+		var self = this;
 		return fs.exec_direct('/usr/share/xraypanel/ctl.sh', [ 'test' ]).then(function(out) {
 			out = (out || '').trim();
 			ui.addNotification(null, E('p', [ out.replace(/^(OK|ERROR):\s*/, '') ]), /^ERROR/.test(out) ? 'error' : 'info');
-			window.setTimeout(function() { location.reload(); }, 800);
+			return L.resolveDefault(fs.exec_direct('/usr/share/xraypanel/status.sh', [], 'json'), {});
+		}).then(function(st) {
+			self.readStatus(st);
+			uci.sections('xraypanel', 'node').forEach(function(n) {
+				var el = document.querySelector('tr[data-sid="%s"] td[data-name="_latency"]'.format(n['.name']));
+				if (el) el.innerHTML = self.latency.textvalue(n['.name']);
+			});
 		}).catch(function(e) {
 			ui.addNotification(null, E('p', [ e.message ]), 'error');
 		});
 	},
 
+	readStatus: function(st) {
+		var tests = this.tests = {}, inUse = this.inUse = {};
+		((st || {}).servers || []).forEach(function(n) { tests[n.name] = n.test; });
+		((st || {}).in_use || []).forEach(function(n) { inUse[n] = true; });
+	},
+
 	render: function(data) {
-		var m, s, o;
-		var st = data[1] || {};
-		var tests = {}, inUse = {};
-		(st.servers || []).forEach(function(n) { tests[n.name] = n.test; });
-		(st.in_use || []).forEach(function(n) { inUse[n] = true; });
+		var m, s, o, self = this;
+		this.readStatus(data[1]);
 
 		m = new form.Map('xraypanel', _('Xray servers'),
 			_('Add one or more servers. With load balancing, Xray tests every enabled server and uses the fastest one; if it fails, traffic moves to the next.'));
@@ -198,20 +237,20 @@ return view.extend({
 
 		o = s.option(form.ListValue, 'node', _('Server'));
 		o.depends('mode', 'single');
-		uci.sections('xraypanel', 'node').forEach(function(n) {
-			o.value(n['.name'], n.label || summary(n.link));
-		});
+		serverChoices(o);
+		o.validate = function(section_id, value) {
+			return (value && !nodeUsable(this.map, value)) ? _('This server is turned off or has no link') : true;
+		};
 
 		o = s.option(form.ListValue, 'backup', _('Backup server'),
 			_('Used only while the main server does not answer the latency test; traffic returns to the main server once it answers again.'));
 		o.depends('mode', 'single');
-		o.value('', _('None'));
-		uci.sections('xraypanel', 'node').forEach(function(n) {
-			o.value(n['.name'], n.label || summary(n.link));
-		});
+		serverChoices(o, _('None'));
 		o.validate = function(section_id, value) {
-			var main = this.section.formvalue(section_id, 'node');
-			return (value && value == main) ? _('Pick a different server than the main one') : true;
+			if (!value) return true;
+			if (value == this.section.formvalue(section_id, 'node'))
+				return _('Pick a different server than the main one');
+			return nodeUsable(this.map, value) ? true : _('This server is turned off or has no link');
 		};
 
 		o = s.option(form.ListValue, 'strategy', _('Balancing method'));
@@ -225,8 +264,8 @@ return view.extend({
 		o.datatype = 'range(10,3600)';
 		o.default = '60';
 		o.placeholder = '60';
-		o.depends('mode', 'balance');
-		o.depends('mode', 'single');
+		// Only used by the balancer: load balancing, or one server with a backup.
+		o.depends({ mode: 'single', backup: '', '!reverse': true });
 
 		o = s.option(form.TextValue, '_import', _('Add servers from links'),
 			_('Paste one or more share links, one per line (or one JSON outbound), then press Save & Apply. Links that are already in the list are skipped.'));
@@ -267,7 +306,7 @@ return view.extend({
 		};
 		s.modaltitle = function(section_id) {
 			// Labels come from share links, so they are escaped before LuCI renders them as HTML.
-			return _('Server') + ': ' + '%h'.format(uci.get('xraypanel', section_id, 'label') || _('new'));
+			return _('Server: %s').format('%h'.format(uci.get('xraypanel', section_id, 'label') || _('new')));
 		};
 
 		o = s.option(form.Flag, 'enabled', _('On'));
@@ -284,12 +323,12 @@ return view.extend({
 			return '%h'.format(summary(uci.get('xraypanel', section_id, 'link')));
 		};
 
-		o = s.option(form.DummyValue, '_latency', _('Latency'));
+		o = this.latency = s.option(form.DummyValue, '_latency', _('Latency'));
 		o.modalonly = false;
 		o.rawhtml = true;
 		o.textvalue = function(section_id) {
-			var t = tests[section_id];
-			var use = inUse[section_id] ? ' <span style="color:#2e7d32;font-weight:600">● ' + _('in use') + '</span>' : '';
+			var t = self.tests[section_id];
+			var use = self.inUse[section_id] ? ' <span style="color:#2e7d32;font-weight:600">● ' + _('in use') + '</span>' : '';
 			if (!t) return '<span style="opacity:.6">' + _('not tested') + '</span>' + use;
 			if (!t.ok) return '<span style="color:#c62828;font-weight:600">' + _('no answer') + '</span>' + use;
 			var c = t.ms < 400 ? '#2e7d32' : t.ms < 1000 ? '#ef6c00' : '#c62828';
@@ -303,7 +342,6 @@ return view.extend({
 		o.rmempty = false;
 		o.validate = function(section_id, value) { return checkLink(value); };
 
-		var self = this;
 		return m.render().then(function(node) {
 			var grid = node.querySelector('.cbi-section[id$="-node"]') || node.lastElementChild;
 			grid.insertBefore(E('div', { 'style': 'margin:0 0 8px' }, [

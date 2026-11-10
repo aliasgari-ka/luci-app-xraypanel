@@ -11,7 +11,7 @@ It is built for routers with little memory. There is no extra daemon: the panel 
 - **Several servers.** Paste `vmess://`, `vless://` (including REALITY), `trojan://` and `ss://` share links, several at once, or a full Xray outbound as JSON. Transports: tcp, ws, grpc, httpupgrade, xhttp, http, kcp.
 - **Load balancing.** Lowest latency (Xray observatory), round robin or random. Or pin one server.
 - **Routing like 3x-ui.** A *Basic* block with blocked/direct IP and domain lists, then an ordered table of full Xray rules: domain, IP, port, source IP and port (per device), network, protocol (sniffed), inbound and HTTP attributes. Each rule goes direct, through the proxy (balancer), to one chosen server, or is blocked. Entries use `geosite:`, `geoip:`, `domain:`, `full:`, `keyword:`, `regexp:`, `ext:`/`ext-ip:` and IP ranges. Iranian sites, banks and apps go direct by default. Domain entries are matched first; IP entries apply once no domain entry matched.
-- **DNS through Xray.** Avoids poisoned answers. Iranian domains and your proxy servers' hostnames are resolved directly.
+- **DNS through Xray.** Avoids poisoned answers. Only routed interfaces use it (their port 53 is redirected to Xray), so direct networks and devices keep the normal DNS. Iranian domains and your proxy servers' hostnames are resolved directly.
 - **Automatic geo updates.** Daily or weekly through cron, downloaded through the proxy when possible. Files are checked against the published SHA-256 when the source has one, and tested against your rules before they replace the old ones.
 - **Fail-open watchdog.** Every minute the router checks the proxy. LAN traffic only goes through Xray while it answers. After three failed checks, LAN goes back to direct until the proxy recovers.
 - **Per-device and per-network bypass.** Choose which interfaces are routed (for example only `br-lan`, so a second "direct" Wi-Fi stays direct) and which IPs never go through Xray.
@@ -56,7 +56,7 @@ If a change is wrong (a server Xray rejects, a typo in a rule), the panel skips 
 | `/etc/config/xraypanel` | Settings, servers and rules (UCI) |
 | `/usr/share/xraypanel/gen.uc` | Turns the UCI config and share links into Xray's JSON |
 | `/etc/init.d/xraypanel` | procd service: generates and tests the config, starts Xray, sets up cron |
-| `/usr/share/xraypanel/firewall.sh` | Adds or removes the nftables redirect table and the dnsmasq hand-off |
+| `/usr/share/xraypanel/firewall.sh` | Adds or removes the nftables redirect tables (TCP, and DNS from routed interfaces) |
 | `/usr/share/xraypanel/watchdog.sh` | Runs every minute; applies or removes the redirect based on a proxy check |
 | `/usr/share/xraypanel/geoupdate.sh` | Downloads and tests geo files |
 | `/usr/share/xraypanel/test.uc` | Tests every server through its own local port |

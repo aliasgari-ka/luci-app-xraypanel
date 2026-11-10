@@ -79,7 +79,7 @@ $msg"
 }
 
 # Anonymous sections (cfgXXXXXX) are renamed when a section above them is deleted, which breaks
-# main.node, rule outbounds and test results. Give old servers fixed names once.
+# main.node, main.backup, rule outbounds and test results. Give old servers fixed names once.
 migrate_nodes() {
 	local i=0 line old new r changed=0
 	while line=$(uci -q -X show "xraypanel.@node[$i]" | head -n1) && [ -n "$line" ]; do
@@ -90,6 +90,7 @@ migrate_nodes() {
 				new="n${old#cfg}"
 				uci rename "xraypanel.$old=$new"
 				[ "$(uci -q get xraypanel.main.node)" = "$old" ] && uci set "xraypanel.main.node=$new"
+				[ "$(uci -q get xraypanel.main.backup)" = "$old" ] && uci set "xraypanel.main.backup=$new"
 				for r in $(uci -X show xraypanel | sed -n "s/^xraypanel\.\([^.]*\)\.outbound='node-$old'\$/\1/p"); do
 					uci set "xraypanel.$r.outbound=node-$new"
 				done

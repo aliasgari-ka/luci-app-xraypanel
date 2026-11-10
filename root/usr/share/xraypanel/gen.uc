@@ -13,7 +13,7 @@ uci.load('xraypanel');
 // Keep these in sync with common.sh.
 const PORT_REDIR = 12345;
 const PORT_SOCKS = 10808;
-const PORT_DNS = 5353;
+const PORT_DNS = 10853;
 const PORT_METRICS = 10085;
 const PORT_TEST = 10900;
 const CHECK = '/var/etc/xraypanel/check.json';
@@ -410,7 +410,11 @@ if (opt(main.mode, 'balance') == 'single' || length(nodes) == 1) {
 	}
 	const bk = opt(main.backup, '');
 	if (bk != '') {
-		if (length(filter(nodes, n => n.tag == 'node-' + bk)) && 'node-' + bk != target.outboundTag) {
+		// Xray selectors match tag prefixes, so "node-n1" would also pick "node-n12".
+		const clash = filter(nodes, n => n.tag != target.outboundTag && index(n.tag, target.outboundTag) == 0);
+		if (length(clash))
+			push(warnings, `The main server's name is the start of another server's name (${substr(clash[0].tag, 5)}), so there is no backup. Delete and add one of them again to get a new name.`);
+		else if (length(filter(nodes, n => n.tag == 'node-' + bk)) && 'node-' + bk != target.outboundTag) {
 			// Main server only, the backup takes over once the observatory marks the main one dead.
 			backup = { main: target.outboundTag, spare: 'node-' + bk };
 			target = { balancerTag: 'balancer' };
@@ -434,6 +438,16 @@ const probe_url = opt(main.probe_url, 'https://www.gstatic.com/generate_204');
 const dns_on = on(main.dns_enabled, true);
 const dns_remote = opt(main.dns_remote, '1.1.1.1');
 const dns_direct = opt(main.dns_direct, '8.8.8.8');
+
+// dnsmasq's local domains (dhcp "domain", usually "lan").
+let local_domains = [];
+if (uci.load('dhcp'))
+	uci.foreach('dhcp', 'dnsmasq', (s) => {
+		const d = opt(s.domain, '');
+		if (match(d, /^[A-Za-z0-9.-]+$/) && index(local_domains, 'domain:' + d) < 0)
+			push(local_domains, 'domain:' + d);
+	});
+if (!length(local_domains)) push(local_domains, 'domain:lan');
 
 function outref(name, label) {
 	if (name == 'direct' || name == 'block') return { outboundTag: name };
@@ -603,7 +617,10 @@ let outbounds = [
 ];
 for (let n in nodes) push(outbounds, n);
 push(outbounds, { tag: 'block', protocol: 'blackhole' });
-if (dns_on) push(outbounds, { tag: 'dns-out', protocol: 'dns' });
+// A and AAAA go to Xray's own DNS; other types (MX, TXT, SRV, ...) go on to dns_remote as they are
+// instead of being dropped.
+if (dns_on) push(outbounds, { tag: 'dns-out', protocol: 'dns',
+	settings: { rules: [ { action: 'hijack', qtype: '1,28' }, { action: 'direct' } ] } });
 
 let balancers = null, observatory = null;
 if (target.balancerTag) {
@@ -639,6 +656,8 @@ const cfg = clean({
 		servers: [
 			length(server_domains) ? { address: dns_direct, domains: server_domains, skipFallback: true } : null,
 			{ address: dns_direct, domains: [ 'geosite:ir', 'domain:ir' ], skipFallback: true },
+			// Router and DHCP host names: "localhost" is the system resolver, which is dnsmasq.
+			{ address: 'localhost', domains: local_domains, skipFallback: true },
 			dns_remote
 		]
 	},
@@ -648,7 +667,9 @@ const cfg = clean({
 		  settings: { network: 'tcp', followRedirect: true },
 		  sniffing: { enabled: true, destOverride: [ 'http', 'tls' ] } },
 		{ tag: 'socks-in', listen: '127.0.0.1', port: PORT_SOCKS, protocol: 'socks', settings: { udp: false } },
-		dns_on ? { tag: 'dns-in', listen: '127.0.0.1', port: PORT_DNS, protocol: 'dokodemo-door',
+		// LAN DNS (port 53) is redirected here by nft, so it listens on the LAN side too; the guard
+		// table in firewall.sh drops queries that were not redirected.
+		dns_on ? { tag: 'dns-in', port: PORT_DNS, protocol: 'dokodemo-door',
 		  settings: { address: dns_remote, port: 53, network: 'tcp,udp' } } : null,
 		// One local socks port per server, used by the panel's "Test" button.
 		...map(nodes, (n, i) => ({ tag: 'test-' + substr(n.tag, 5), listen: '127.0.0.1', port: PORT_TEST + i,

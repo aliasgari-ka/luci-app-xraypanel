@@ -75,6 +75,9 @@ date +%s > "$XP_ASSET/updated"
 logger -t xraypanel "geo files updated"
 
 # Restart also covers the first install, when Xray could not start without geo files, and
-# regenerates the config so rules use (or stop using) the extra categories.
-xp_enabled && /etc/init.d/xraypanel restart
+# regenerates the config so rules use (or stop using) the extra categories. A service that was
+# stopped or disabled by hand stays stopped.
+if xp_enabled && { xp_running || { [ ! -f "$XP_CONF" ] && /etc/init.d/xraypanel enabled; }; }; then
+	/etc/init.d/xraypanel restart
+fi
 echo "OK: geo files updated"

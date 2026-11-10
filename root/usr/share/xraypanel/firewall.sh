@@ -1,6 +1,6 @@
 #!/bin/sh
-# Turns the LAN redirect and the dnsmasq hand-off on or off.
-#   start | stop    LAN redirect + DNS hand-off (switched by the watchdog)
+# Turns the LAN redirect (TCP and DNS) on or off.
+#   start | stop    LAN redirect (switched by the watchdog)
 #   guard | unguard blocks direct connections to Xray's redirect port (while Xray runs)
 #   check           exits 0 if the redirect table is loaded
 
@@ -11,7 +11,7 @@
 TABLE=xraypanel
 GUARD=xraypanel_guard
 
-# Every dnsmasq instance has its own conf-dir.
+# Every dnsmasq instance has its own conf-dir. Older versions handed all of dnsmasq's DNS to Xray there.
 dnsmasq_confdirs() {
 	local d
 	d=$(sed -n 's/^conf-dir=\([^,]*\).*/\1/p' /var/etc/dnsmasq.conf.* 2>/dev/null | sort -u)
@@ -24,18 +24,21 @@ note() {
 }
 
 IFACES=""
+IFACES_SET=0
 SRCS=""
 # Accepts a device (br-lan) or a network name (lan), which is turned into its device.
+# nft matches devices by name, so one that is not there yet (a Wi-Fi still starting) is kept.
 add_iface() {
 	local dev="$1"
+	IFACES_SET=1
 	case "$dev" in
 		''|*[!A-Za-z0-9._@-]*) note "Interface \"$1\" has an invalid name and was ignored"; return ;;
 	esac
 	if [ ! -e "/sys/class/net/$dev" ]; then
 		network_get_device dev "$1" || network_get_physdev dev "$1"
-		if [ -z "$dev" ] || [ ! -e "/sys/class/net/$dev" ]; then
-			note "Interface \"$1\" does not exist on this router and was ignored"
-			return
+		if [ -z "$dev" ]; then
+			dev="$1"
+			note "Interface \"$1\" does not exist right now; it is routed once it appears"
 		fi
 	fi
 	case ", $IFACES," in *", \"$dev\","*) return ;; esac
@@ -49,19 +52,11 @@ add_src() {
 	fi
 }
 
-dns_handoff() {
+# Removes the hand-off file of older versions; DNS is now redirected by nft for routed interfaces only.
+dns_cleanup() {
 	local d changed=0
 	for d in $(dnsmasq_confdirs); do
-		if [ "$1" = on ]; then
-			mkdir -p "$d"
-			printf 'server=127.0.0.1#%s\nno-resolv\n' "$XP_PORT_DNS" > "$d/xraypanel.conf.new"
-			if cmp -s "$d/xraypanel.conf.new" "$d/xraypanel.conf"; then
-				rm -f "$d/xraypanel.conf.new"
-			else
-				mv "$d/xraypanel.conf.new" "$d/xraypanel.conf"
-				changed=1
-			fi
-		elif [ -f "$d/xraypanel.conf" ]; then
+		if [ -f "$d/xraypanel.conf" ]; then
 			rm -f "$d/xraypanel.conf"
 			changed=1
 		fi
@@ -80,11 +75,15 @@ start() {
 	config_list_foreach main bypass_src add_src
 	config_get_bool quic main block_quic 1
 	config_get_bool dns main dns_enabled 1
-	[ -n "$IFACES" ] || IFACES='"br-lan"'
+	# br-lan only when no interface is chosen at all, not when the chosen ones are missing.
+	[ "$IFACES_SET" = 1 ] || IFACES='"br-lan"'
 
-	local src_elems="" quic_rule=""
+	local if_elems="" src_elems="" quic_rule="" dns_rule=""
+	[ -n "$IFACES" ] && if_elems="elements = { $IFACES }"
 	[ -n "$SRCS" ] && src_elems="elements = { $SRCS }"
 	[ "$quic" = 1 ] && quic_rule='iifname @lan_if ip saddr != @bypass_src ip daddr != @bypass_dst udp dport 443 reject'
+	# Any DNS server a client asks (the router or a hard-coded one) is answered by Xray.
+	[ "$dns" = 1 ] && dns_rule="meta l4proto { tcp, udp } th dport 53 redirect to :$XP_PORT_DNS"
 
 	if ! out=$(nft -f - 2>&1 <<EOF
 table ip $TABLE
@@ -92,7 +91,7 @@ delete table ip $TABLE
 table ip $TABLE {
 	set lan_if {
 		type ifname
-		elements = { $IFACES }
+		$if_elems
 	}
 	set bypass_src {
 		type ipv4_addr
@@ -112,6 +111,7 @@ table ip $TABLE {
 		type nat hook prerouting priority dstnat - 5; policy accept;
 		iifname != @lan_if return
 		ip saddr @bypass_src return
+		$dns_rule
 		ip daddr @bypass_dst return
 		meta l4proto tcp redirect to :$XP_PORT_REDIR
 	}
@@ -128,7 +128,25 @@ EOF
 	fi
 	rm -f "$XP_RUN/fw_error"
 
-	if [ "$dns" = 1 ]; then dns_handoff on; else dns_handoff off; fi
+	# DNS over IPv6 to the router (it advertises itself as a resolver); bypass_src is IPv4 only.
+	nft delete table ip6 $TABLE 2>/dev/null
+	if [ "$dns" = 1 ] && ! out=$(nft -f - 2>&1 <<EOF
+table ip6 $TABLE {
+	set lan_if {
+		type ifname
+		$if_elems
+	}
+	chain prerouting {
+		type nat hook prerouting priority dstnat - 5; policy accept;
+		iifname != @lan_if return
+		$dns_rule
+	}
+}
+EOF
+	); then
+		note "DNS over IPv6 is not sent through Xray: $out"
+	fi
+	dns_cleanup
 
 	if [ ! -f "$XP_RUN/active" ]; then
 		touch "$XP_RUN/active"
@@ -138,7 +156,8 @@ EOF
 
 stop() {
 	nft delete table ip $TABLE 2>/dev/null
-	dns_handoff off
+	nft delete table ip6 $TABLE 2>/dev/null
+	dns_cleanup
 	if [ -f "$XP_RUN/active" ]; then
 		rm -f "$XP_RUN/active"
 		logger -t xraypanel "LAN traffic is direct again"
@@ -146,6 +165,7 @@ stop() {
 }
 
 # Only redirected connections may reach the redirect port; a direct one would make Xray dial itself.
+# The DNS port listens on every address too, so only redirected (or local) queries may reach it.
 guard() {
 	# inet, because Xray listens on IPv6 too (:::port).
 	nft delete table ip $GUARD 2>/dev/null
@@ -157,6 +177,9 @@ table inet $GUARD {
 		type filter hook input priority filter - 5; policy accept;
 		tcp dport $XP_PORT_REDIR ct status dnat accept
 		tcp dport $XP_PORT_REDIR drop
+		meta l4proto { tcp, udp } th dport $XP_PORT_DNS ct status dnat accept
+		meta l4proto { tcp, udp } th dport $XP_PORT_DNS iif lo accept
+		meta l4proto { tcp, udp } th dport $XP_PORT_DNS drop
 	}
 }
 EOF
