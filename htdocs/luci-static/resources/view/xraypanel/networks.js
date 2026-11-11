@@ -235,7 +235,7 @@ return view.extend({
 		} });
 		var bands = radios.map(function(r) {
 			return E('label', { 'style': 'margin-right:14px' }, [
-				E('input', { 'type': 'checkbox', 'value': r, 'checked': g.radios.indexOf(r) > -1 ? '' : null }),
+				E('input', { 'type': 'checkbox', 'class': 'xn-band', 'value': r, 'checked': g.radios.indexOf(r) > -1 ? '' : null }),
 				' ', bandName(r)
 			]);
 		});
@@ -274,7 +274,9 @@ return view.extend({
 			return m ? E('option', { 'value': m }, text(h[1] && h[1] != h[0] ? h[1] + ' (' + m + ')' : m)) : null;
 		}).filter(function(o) { return o; })));
 
-		var macBox = E('div', {}, [ macs.render(), E('div', { 'style': 'margin-top:6px' }, picker) ]);
+		var macBox = E('div', {}, [ macs.render(), E('div', { 'style': 'margin-top:6px' }, picker),
+			E('div', { 'class': 'xn-muted', 'style': 'font-size:.85em;margin-top:4px;max-width:420px' },
+				_('Phones use a different private address for each Wi-Fi network; use the address the device shows for this network, or turn its private address off.')) ]);
 		var mfNode = mf.render();
 		var showMacs = function() {
 			macBox.style.display = mf.getValue() ? '' : 'none';
@@ -300,9 +302,7 @@ return view.extend({
 				E('label', {}, [ hidden, ' ', _('Do not broadcast the SSID; devices must type the name to join') ]) ]),
 			E('div', { 'class': 'cbi-value', 'style': 'align-items:flex-start' }, [
 				E('div', { 'class': 'cbi-value-title' }, _('MAC filter')),
-				E('div', {}, [ mfNode, macBox,
-					E('div', { 'class': 'xn-muted', 'style': 'font-size:.85em;margin-top:4px;max-width:420px' },
-						_('Phones use a different private address for each Wi-Fi network; use the address the device shows for this network, or turn its private address off.')) ])
+				E('div', {}, [ mfNode, macBox ])
 			]),
 			E('div', { 'class': 'cbi-value', 'style': 'align-items:flex-start' }, [
 				E('div', { 'class': 'cbi-value-title' }, _('Internet route')),
@@ -314,7 +314,7 @@ return view.extend({
 				E('button', { 'class': 'cbi-button cbi-button-positive', 'click': function() {
 					ssid.triggerValidation(); key.triggerValidation(); macs.triggerValidation();
 					if (!ssid.isValid() || !key.isValid() || (mf.getValue() && !macs.isValid())) return;
-					var chosen = body.querySelectorAll('input[type=checkbox]:checked');
+					var chosen = body.querySelectorAll('input.xn-band:checked');
 					var picked = Array.prototype.map.call(chosen, function(i) { return i.value; });
 					if (!picked.length) { ui.addNotification(null, E('p', _('Pick at least one band')), 'warning'); return; }
 					var r = body.querySelector('input[name=xn-route]:checked');
