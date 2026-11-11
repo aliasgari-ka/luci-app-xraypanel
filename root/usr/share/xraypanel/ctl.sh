@@ -43,12 +43,19 @@ case "$1" in
 		done
 		uci commit xraypanel
 		if nft list set ip xraypanel bypass_src >/dev/null 2>&1; then
-			nft flush set ip xraypanel bypass_src
+			# One nft transaction: flush and refill apply together, so a direct device is
+			# never briefly redirected to Xray. If the batch fails nothing changes.
+			els=""
 			for ip in "$@"; do
-				is_ip "$ip" || continue
-				nft add element ip xraypanel bypass_src { $ip } 2>/dev/null
+				is_ip "$ip" && els="$els${els:+, }$ip"
 			done
-			echo "OK: $n device(s) set to direct"
+			if { echo "flush set ip xraypanel bypass_src"
+			     [ -n "$els" ] && echo "add element ip xraypanel bypass_src { $els }"
+			   } | nft -f - 2>/dev/null; then
+				echo "OK: $n device(s) set to direct"
+			else
+				echo "ERROR: saved, but the live list could not be updated. Press Restart on the Status page."
+			fi
 		else
 			echo "OK: $n device(s) saved (will apply when Xray routing is active)"
 		fi

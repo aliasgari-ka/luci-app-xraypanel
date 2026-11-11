@@ -72,7 +72,8 @@ if (!match(body, /:\/\//)) {
 let links = [];
 for (let l in split(body, /\r?\n/)) {
 	l = trim(l);
-	if (match(l, /^(vmess|vless|trojan|ss):\/\/\S+$/i)) push(links, l);
+	// The name after "#" may contain spaces (some providers do not encode it); the rest may not.
+	if (match(l, /^(vmess|vless|trojan|ss):\/\/[^[:space:]#]+(#.*)?$/i)) push(links, l);
 }
 if (!length(links)) out('ERROR: no supported servers (vmess, vless, trojan, ss) in the subscription');
 if (length(links) > MAX) links = slice(links, 0, MAX);
