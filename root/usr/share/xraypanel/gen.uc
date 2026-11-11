@@ -438,6 +438,10 @@ const probe_url = opt(main.probe_url, 'https://www.gstatic.com/generate_204');
 const dns_on = on(main.dns_enabled, true);
 const dns_remote = opt(main.dns_remote, '1.1.1.1');
 const dns_direct = opt(main.dns_direct, '8.8.8.8');
+// dns_remote is an IP or DNS-over-HTTPS (https://1.1.1.1/dns-query). The local DNS inbound and
+// dns-out's pass-through for other query types need a plain IP, so they use the URL's IP.
+const dns_remote_ip = match(dns_remote, /^[0-9.]+$/) ? dns_remote :
+	(match(dns_remote, /^https:\/\/([0-9.]+)[:\/]/)?.[1] ?? '1.1.1.1');
 
 // dnsmasq's local domains (dhcp "domain", usually "lan").
 let local_domains = [];
@@ -670,7 +674,7 @@ const cfg = clean({
 		// LAN DNS (port 53) is redirected here by nft, so it listens on the LAN side too; the guard
 		// table in firewall.sh drops queries that were not redirected.
 		dns_on ? { tag: 'dns-in', port: PORT_DNS, protocol: 'dokodemo-door',
-		  settings: { address: dns_remote, port: 53, network: 'tcp,udp' } } : null,
+		  settings: { address: dns_remote_ip, port: 53, network: 'tcp,udp' } } : null,
 		// One local socks port per server, used by the panel's "Test" button.
 		...map(nodes, (n, i) => ({ tag: 'test-' + substr(n.tag, 5), listen: '127.0.0.1', port: PORT_TEST + i,
 		  protocol: 'socks', settings: { udp: false } }))

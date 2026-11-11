@@ -35,9 +35,17 @@
 			"path": "xraypanel/networks"
 		}
 	},
+	"admin/services/xraypanel/devices": {
+		"title": "Devices",
+		"order": 4,
+		"action": {
+			"type": "view",
+			"path": "xraypanel/devices"
+		}
+	},
 	"admin/services/xraypanel/rules": {
 		"title": "Routing",
-		"order": 4,
+		"order": 5,
 		"action": {
 			"type": "view",
 			"path": "xraypanel/rules"
@@ -45,7 +53,7 @@
 	},
 	"admin/services/xraypanel/settings": {
 		"title": "Settings",
-		"order": 5,
+		"order": 6,
 		"action": {
 			"type": "view",
 			"path": "xraypanel/settings"
