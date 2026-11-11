@@ -4,6 +4,7 @@
 'require uci';
 'require fs';
 'require ui';
+'require dom';
 
 function b64(s) {
 	s = s.replace(/-/g, '+').replace(/_/g, '/').replace(/=+$/, '');
@@ -185,7 +186,50 @@ function importLines(value) {
 	return value.split(/\r?\n/).map(function(l, i) { return [ i + 1, l.trim() ]; }).filter(function(l) { return l[1]; });
 }
 
+function ago(ts) {
+	ts = +ts;
+	if (!ts) return _('never');
+	var d = Math.max(0, Math.floor(Date.now() / 1000) - ts);
+	if (d < 90) return _('just now');
+	if (d < 5400) return _('%d minutes ago').format(Math.round(d / 60));
+	if (d < 172800) return _('%d hours ago').format(Math.round(d / 3600));
+	return _('%d days ago').format(Math.round(d / 86400));
+}
+
+// ctl.sh prints one OK:/ERROR: line per subscription.
+function notifyLines(out) {
+	var lines = (out || '').trim().split(/\n/).filter(function(l) { return l; });
+	if (!lines.length) lines = [ 'ERROR: ' + _('No answer') ];
+	lines.forEach(function(l) {
+		ui.addNotification(null, E('p', [ l.replace(/^(OK|ERROR):\s*/, '') ]), /^ERROR/.test(l) ? 'error' : 'info');
+	});
+}
+
 return view.extend({
+	// Fetches the subscriptions, then redraws the page so new servers show. Unsaved edits are lost,
+	// which is why the button says to save first.
+	updateSubs: function() {
+		var self = this;
+		return fs.exec_direct('/usr/share/xraypanel/ctl.sh', [ 'sub' ]).then(function(out) {
+			notifyLines(out);
+			uci.unload('xraypanel');
+			return self.load();
+		}).then(function(data) {
+			return self.render(data);
+		}).then(function(node) {
+			var view = document.querySelector('#view');
+			if (view) dom.content(view, node);
+		}).catch(function(e) {
+			ui.addNotification(null, E('p', [ e.message ]), 'error');
+		});
+	},
+
+	speedTest: function() {
+		return fs.exec_direct('/usr/share/xraypanel/ctl.sh', [ 'speed' ]).then(notifyLines).catch(function(e) {
+			ui.addNotification(null, E('p', [ e.message ]), 'error');
+		});
+	},
+
 	load: function() {
 		return Promise.all([
 			uci.load('xraypanel'),
@@ -296,6 +340,38 @@ return view.extend({
 		};
 		o.remove = function() {};
 
+		s = m.section(form.GridSection, 'subscription', _('Subscriptions'),
+			_('Subscription links from your provider. Add one, press Save & Apply, then "Update subscriptions". Updating only changes the server list; Xray keeps running and uses the new servers after the next Save & Apply.'));
+		s.addremove = true;
+		s.anonymous = true;
+		s.nodescriptions = true;
+		s.modaltitle = function(section_id) {
+			return _('Subscription: %s').format('%h'.format(uci.get('xraypanel', section_id, 'label') || _('new')));
+		};
+
+		o = s.option(form.Flag, 'enabled', _('On'));
+		o.default = '1';
+		o.editable = true;
+		o.rmempty = false;
+
+		o = s.option(form.Value, 'label', _('Name'));
+		o.rmempty = false;
+
+		o = s.option(form.Value, 'url', _('Subscription URL'));
+		o.modalonly = true;
+		o.rmempty = false;
+		o.validate = function(section_id, value) {
+			return /^https?:\/\/[^\s\/]+(\/\S*)?$/.test(value || '') || _('Enter a full http:// or https:// address');
+		};
+
+		o = s.option(form.DummyValue, '_subinfo', _('Last update'));
+		o.modalonly = false;
+		o.textvalue = function(section_id) {
+			var n = uci.get('xraypanel', section_id, 'count');
+			var t = uci.get('xraypanel', section_id, 'updated');
+			return t ? ago(t) + (n ? ' · ' + _('%s servers').format(n) : '') : _('never');
+		};
+
 		s = m.section(form.GridSection, 'node', _('Servers'));
 		s.addremove = true;
 		s.anonymous = true;
@@ -321,6 +397,14 @@ return view.extend({
 		o.modalonly = false;
 		o.textvalue = function(section_id) {
 			return '%h'.format(summary(uci.get('xraypanel', section_id, 'link')));
+		};
+
+		o = s.option(form.DummyValue, '_source', _('Source'));
+		o.modalonly = false;
+		o.textvalue = function(section_id) {
+			var sub = uci.get('xraypanel', section_id, 'sub');
+			if (!sub) return _('manual');
+			return '%h'.format(uci.get('xraypanel', sub, 'label') || _('subscription'));
 		};
 
 		o = this.latency = s.option(form.DummyValue, '_latency', _('Latency'));
@@ -350,8 +434,23 @@ return view.extend({
 					'click': ui.createHandlerFn(self, 'testAll')
 				}, _('Test all servers')),
 				' ',
+				E('button', {
+					'class': 'cbi-button cbi-button-action',
+					'title': _('Downloads up to 10 MB through the server in use; that counts against its traffic.'),
+					'click': ui.createHandlerFn(self, 'speedTest')
+				}, _('Speed test')),
+				' ',
 				E('span', { 'style': 'opacity:.7' }, _('Tests the saved servers. Save & Apply new ones first.'))
 			]), grid.firstChild);
+			var subs = node.querySelector('.cbi-section[id$="-subscription"]');
+			if (subs) subs.appendChild(E('div', { 'style': 'margin:8px 0 0' }, [
+				E('button', {
+					'class': 'cbi-button cbi-button-action',
+					'click': ui.createHandlerFn(self, 'updateSubs')
+				}, _('Update subscriptions')),
+				' ',
+				E('span', { 'style': 'opacity:.7' }, _('Save & Apply new or changed subscriptions first.'))
+			]));
 			return node;
 		});
 	}

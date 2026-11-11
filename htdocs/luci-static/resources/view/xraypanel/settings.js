@@ -53,9 +53,23 @@ return view.extend({
 		o.default = '1';
 		o.rmempty = false;
 
-		o = s.option(form.Value, 'dns_remote', _('DNS server through the proxy'));
-		o.datatype = 'ip4addr("nomask")';
+		o = s.option(form.Value, 'dns_remote', _('DNS server through the proxy'),
+			_('A plain IP, or encrypted DNS-over-HTTPS (DoH) such as https://1.1.1.1/dns-query. Put an IP in the URL, not a host name.'));
+		o.value('1.1.1.1', '1.1.1.1 (Cloudflare)');
+		o.value('8.8.8.8', '8.8.8.8 (Google)');
+		o.value('https://1.1.1.1/dns-query', _('Cloudflare DoH (encrypted)'));
+		o.value('https://8.8.8.8/dns-query', _('Google DoH (encrypted)'));
 		o.placeholder = '1.1.1.1';
+		o.validate = function(section_id, v) {
+			if (!v) return true;
+			var ip = function(a) {
+				var m = a.match(/^(\d+)\.(\d+)\.(\d+)\.(\d+)$/);
+				return !!m && [ 1, 2, 3, 4 ].every(function(i) { return +m[i] <= 255 && !/^0\d/.test(m[i]); });
+			};
+			if (ip(v)) return true;
+			var u = v.match(/^https:\/\/([0-9.]+)(:\d{1,5})?\/\S*$/);
+			return (u && ip(u[1])) ? true : _('Use an IP like 1.1.1.1 or a DoH address like https://1.1.1.1/dns-query');
+		};
 
 		o = s.option(form.Value, 'dns_direct', _('DNS server for Iranian domains'));
 		o.datatype = 'ip4addr("nomask")';

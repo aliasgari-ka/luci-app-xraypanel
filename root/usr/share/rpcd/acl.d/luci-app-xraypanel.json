@@ -5,6 +5,7 @@
 			"cgi-io": [ "exec" ],
 			"file": {
 				"/usr/share/xraypanel/status.sh": [ "exec" ],
+				"/usr/share/xraypanel/devices.sh": [ "exec" ],
 				"/sbin/logread -l 400 -e xray": [ "exec" ]
 			},
 			"ubus": {
@@ -21,7 +22,11 @@
 			"file": {
 				"/usr/share/xraypanel/ctl.sh restart": [ "exec" ],
 				"/usr/share/xraypanel/ctl.sh geo": [ "exec" ],
-				"/usr/share/xraypanel/ctl.sh test": [ "exec" ]
+				"/usr/share/xraypanel/ctl.sh test": [ "exec" ],
+				"/usr/share/xraypanel/ctl.sh bypass": [ "exec" ],
+				"/usr/share/xraypanel/ctl.sh bypass *": [ "exec" ],
+				"/usr/share/xraypanel/ctl.sh sub": [ "exec" ],
+				"/usr/share/xraypanel/ctl.sh speed": [ "exec" ]
 			},
 			"ubus": {
 				"file": [ "exec" ]
