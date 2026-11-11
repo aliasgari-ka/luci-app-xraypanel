@@ -27,6 +27,22 @@ var SECURITY = [
 	[ 'none', _('Open, no password') ]
 ];
 
+var MACFILTER = {
+	'': _('Off'),
+	'allow': _('Only allow these devices'),
+	'deny': _('Block these devices')
+};
+
+// Accepts aa:bb:cc:dd:ee:ff or aa-bb-cc-dd-ee-ff; returns it lowercase with colons, or null.
+function normMac(s) {
+	s = String(s || '').trim().toLowerCase().replace(/-/g, ':');
+	return /^([0-9a-f]{2}:){5}[0-9a-f]{2}$/.test(s) ? s : null;
+}
+
+function macLines(v) {
+	return String(v || '').split(/[\s,]+/).filter(function(s) { return s.length; });
+}
+
 // LuCI's E() inserts a plain string as HTML but an array of strings as text.
 // SSIDs, network names and addresses go through text().
 function text(s) {
@@ -89,13 +105,23 @@ function groups() {
 				encryption: s.encryption || 'none',
 				key: s.key || '',
 				disabled: s.disabled == '1',
+				hidden: false,
+				// The first radio's filter wins; the lists of all radios are merged.
+				macfilter: (s.macfilter == 'allow' || s.macfilter == 'deny') ? s.macfilter : '',
+				maclist: [],
 				sids: [], radios: []
 			};
 			list.push(map[key]);
 		}
-		map[key].sids.push(s['.name']);
-		map[key].radios.push(s.device);
-		if (s.disabled != '1') map[key].disabled = false;
+		var g = map[key];
+		g.sids.push(s['.name']);
+		g.radios.push(s.device);
+		if (s.disabled != '1') g.disabled = false;
+		if (s.hidden == '1') g.hidden = true;
+		L.toArray(s.maclist).forEach(function(m) {
+			m = normMac(m) || m;
+			if (g.maclist.indexOf(m) < 0) g.maclist.push(m);
+		});
 	});
 	return list;
 }
@@ -119,6 +145,7 @@ return view.extend({
 		var self = this;
 		return Promise.all([
 			uci.load([ 'wireless', 'network', 'firewall', 'dhcp', 'xraypanel' ]),
+			L.resolveDefault(network.getHostHints(), null).then(function(h) { self.hints = h; }),
 			L.resolveDefault(network.getNetworks(), []).then(function(nets) {
 				self.usedAddrs = [];
 				nets.forEach(function(n) {
@@ -186,7 +213,8 @@ return view.extend({
 		var radios = uci.sections('wireless', 'wifi-device').map(function(r) { return r['.name']; });
 		g = g || {
 			ssid: '', network: (rts.filter(function(r) { return r.proxied; })[0] || rts[0] || {}).name || 'lan',
-			encryption: 'sae-mixed', key: '', disabled: false, sids: [], radios: radios.slice()
+			encryption: 'sae-mixed', key: '', disabled: false,
+			hidden: false, macfilter: '', maclist: [], sids: [], radios: radios.slice()
 		};
 
 		var ssid = new ui.Textfield(g.ssid, { placeholder: _('Network name'), validate: function(v) {
@@ -207,7 +235,7 @@ return view.extend({
 		} });
 		var bands = radios.map(function(r) {
 			return E('label', { 'style': 'margin-right:14px' }, [
-				E('input', { 'type': 'checkbox', 'value': r, 'checked': g.radios.indexOf(r) > -1 ? '' : null }),
+				E('input', { 'type': 'checkbox', 'class': 'xn-band', 'value': r, 'checked': g.radios.indexOf(r) > -1 ? '' : null }),
 				' ', bandName(r)
 			]);
 		});
@@ -220,6 +248,43 @@ return view.extend({
 				' ', E('span', { 'class': 'xn-muted' }, text(r.addr))
 			]);
 		});
+		var hidden = E('input', { 'type': 'checkbox', 'checked': g.hidden ? '' : null });
+
+		var mf = new ui.Select(g.macfilter, MACFILTER, { sort: false });
+		var macs = new ui.Textarea(g.maclist.join('\n'), { rows: 4, placeholder: 'aa:bb:cc:dd:ee:ff', validate: function(v) {
+			var bad = macLines(v).filter(function(s) { return !normMac(s); });
+			if (bad.length) return _('Not a MAC address: %s').format(bad[0]);
+			// An empty allow list would keep every device out.
+			if (mf.getValue() == 'allow' && !macLines(v).length) return _('Add at least one device');
+			return true;
+		} });
+
+		// Known devices (DHCP leases and neighbours) to add without typing the address.
+		var known = this.hints ? this.hints.getMACHints(false) : [];
+		var picker = E('select', { 'class': 'cbi-input-select', 'change': function(ev) {
+			var m = ev.target.value;
+			ev.target.value = '';
+			if (!m) return;
+			var cur = macLines(macs.getValue());
+			if (cur.map(normMac).indexOf(m) < 0) cur.push(m);
+			macs.setValue(cur.join('\n'));
+			macs.triggerValidation();
+		} }, [ E('option', { 'value': '' }, _('Add a known device…')) ].concat(known.map(function(h) {
+			var m = normMac(h[0]);
+			return m ? E('option', { 'value': m }, text(h[1] && h[1] != h[0] ? h[1] + ' (' + m + ')' : m)) : null;
+		}).filter(function(o) { return o; })));
+
+		var macBox = E('div', {}, [ macs.render(), E('div', { 'style': 'margin-top:6px' }, picker),
+			E('div', { 'class': 'xn-muted', 'style': 'font-size:.85em;margin-top:4px;max-width:420px' },
+				_('Phones use a different private address for each Wi-Fi network; use the address the device shows for this network, or turn its private address off.')) ]);
+		var mfNode = mf.render();
+		var showMacs = function() {
+			macBox.style.display = mf.getValue() ? '' : 'none';
+			if (mf.getValue()) macs.triggerValidation();
+		};
+		mfNode.addEventListener('widget-change', showMacs);
+		macBox.style.display = g.macfilter ? '' : 'none';
+
 		var hasDirect = rts.some(function(r) { return !r.proxied; });
 		if (!hasDirect)
 			routeOpts.push(E('label', { 'class': 'xn-route' }, [
@@ -233,6 +298,12 @@ return view.extend({
 			E('div', { 'class': 'cbi-value' }, [ E('div', { 'class': 'cbi-value-title' }, _('Security')), sec.render() ]),
 			E('div', { 'class': 'cbi-value' }, [ E('div', { 'class': 'cbi-value-title' }, _('Password')), key.render() ]),
 			E('div', { 'class': 'cbi-value' }, [ E('div', { 'class': 'cbi-value-title' }, _('Bands')), E('div', {}, bands) ]),
+			E('div', { 'class': 'cbi-value' }, [ E('div', { 'class': 'cbi-value-title' }, _('Hide name')),
+				E('label', {}, [ hidden, ' ', _('Do not broadcast the SSID; devices must type the name to join') ]) ]),
+			E('div', { 'class': 'cbi-value', 'style': 'align-items:flex-start' }, [
+				E('div', { 'class': 'cbi-value-title' }, _('MAC filter')),
+				E('div', {}, [ mfNode, macBox ])
+			]),
 			E('div', { 'class': 'cbi-value', 'style': 'align-items:flex-start' }, [
 				E('div', { 'class': 'cbi-value-title' }, _('Internet route')),
 				E('div', {}, routeOpts)
@@ -241,9 +312,9 @@ return view.extend({
 			E('div', { 'class': 'right' }, [
 				E('button', { 'class': 'cbi-button', 'click': ui.hideModal }, _('Cancel')), ' ',
 				E('button', { 'class': 'cbi-button cbi-button-positive', 'click': function() {
-					ssid.triggerValidation(); key.triggerValidation();
-					if (!ssid.isValid() || !key.isValid()) return;
-					var chosen = body.querySelectorAll('input[type=checkbox]:checked');
+					ssid.triggerValidation(); key.triggerValidation(); macs.triggerValidation();
+					if (!ssid.isValid() || !key.isValid() || (mf.getValue() && !macs.isValid())) return;
+					var chosen = body.querySelectorAll('input.xn-band:checked');
 					var picked = Array.prototype.map.call(chosen, function(i) { return i.value; });
 					if (!picked.length) { ui.addNotification(null, E('p', _('Pick at least one band')), 'warning'); return; }
 					var r = body.querySelector('input[name=xn-route]:checked');
@@ -258,7 +329,11 @@ return view.extend({
 					self.save(g, {
 						ssid: ssid.getValue(), encryption: sec.getValue(),
 						key: sec.getValue() == 'none' ? '' : key.getValue(),
-						network: net, radios: picked
+						network: net, radios: picked,
+						hidden: hidden.checked,
+						macfilter: mf.getValue(),
+						maclist: macLines(macs.getValue()).map(normMac)
+							.filter(function(m, i, a) { return a.indexOf(m) == i; })
 					});
 				} }, isNew ? _('Add') : _('Save'))
 			])
@@ -287,6 +362,9 @@ return view.extend({
 			uci.set('wireless', sid, 'network', v.network);
 			uci.set('wireless', sid, 'encryption', v.encryption);
 			uci.set('wireless', sid, 'key', v.key || null);
+			uci.set('wireless', sid, 'hidden', v.hidden ? '1' : null);
+			uci.set('wireless', sid, 'macfilter', v.macfilter || null);
+			uci.set('wireless', sid, 'maclist', v.macfilter && v.maclist.length ? v.maclist : null);
 			if (g.disabled) uci.set('wireless', sid, 'disabled', '1');
 			// A fresh OpenWrt ships with the radios themselves turned off.
 			else enableRadio(r);
@@ -354,7 +432,12 @@ return view.extend({
 			return E('tr', { 'style': g.disabled ? 'opacity:.55' : '' }, [
 				E('td', {}, [ E('div', { 'class': 'xn-ssid' }, text(g.ssid)),
 					E('div', { 'class': 'xn-muted', 'style': 'font-size:.85em' },
-						text(securityChoices(g.encryption)[g.encryption])) ]),
+						text(securityChoices(g.encryption)[g.encryption])),
+					(g.hidden || g.macfilter) ? E('div', { 'style': 'margin-top:3px' }, [
+						g.hidden ? pill('#6d4c41', _('Hidden')) : '', ' ',
+						g.macfilter == 'allow' ? pill('#7b1fa2', _('Allow list: %d').format(g.maclist.length))
+							: g.macfilter == 'deny' ? pill('#c62828', _('Block list: %d').format(g.maclist.length)) : ''
+					]) : '' ]),
 				E('td', {}, text(g.radios.map(bandName).join(' + '))),
 				E('td', {}, [ route, ' ', E('span', { 'class': 'xn-muted' }, text(g.network)) ]),
 				E('td', {}, g.disabled ? E('span', { 'class': 'xn-muted' }, _('off'))
