@@ -45,7 +45,7 @@ To build an installable package instead, put this folder under `package/` in an 
 Open `http://192.168.1.1` (your router's LAN address), log in, then go to **Services → Xray**.
 
 1. **Servers**: paste your links into *Add servers from links* (or add a subscription under *Subscriptions*), turn on *Enable Xray*, then **Save & Apply**.
-2. **Routing**: pick direct/blocked lists under *Basic*, then add rules. Rules are checked from the top and the first match wins; inside one rule every filled field must match.
+2. **Routing**: pick direct/blocked lists under *Basic*, then add rules. Rules are checked from the top and the first match wins; inside one rule every filled field must match, except Domain and IP, where either one is enough.
 3. **Devices**: tick a device on a routed network to send it out directly. Devices on direct networks are shown read-only.
 4. **Settings**: interfaces to route, devices that stay direct, DNS (plain or DoH), geo update schedule.
 5. **Status**: service state, whether LAN is going through Xray, proxy latency, memory use, log, and buttons to restart or update geo files.

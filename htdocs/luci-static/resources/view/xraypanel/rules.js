@@ -201,7 +201,7 @@ return view.extend({
 		/* Rules */
 
 		s = m.section(form.GridSection, 'rule', _('Routing rules'),
-			_('Checked from top to bottom; the first match wins. Inside one rule every filled field must match. Drag rows to reorder.'));
+			_('Checked from top to bottom; the first match wins. Inside one rule every filled field must match, except Domain and IP: the rule matches when either of them does. Drag rows to reorder.'));
 		s.addremove = true;
 		s.anonymous = true;
 		s.sortable = true;
