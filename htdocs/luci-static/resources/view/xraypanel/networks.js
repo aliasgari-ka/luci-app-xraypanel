@@ -231,6 +231,8 @@ return view.extend({
 		uci.set('dhcp', name, 'start', '100');
 		uci.set('dhcp', name, 'limit', '150');
 		uci.set('dhcp', name, 'leasetime', '12h');
+		// Without dhcpv4=server, dnsmasq on current OpenWrt adds no DHCP range and clients get no address.
+		uci.set('dhcp', name, 'dhcpv4', 'server');
 
 		var z = uci.add('firewall', 'zone');
 		uci.set('firewall', z, 'name', name);
