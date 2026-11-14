@@ -77,9 +77,38 @@ function proxiedDevices() {
 	return v.length ? v : [ 'br-lan' ];
 }
 
+// main.net_out holds "network=node-x": that network's proxied traffic uses that server.
+function netServers() {
+	var m = {};
+	L.toArray(uci.get('xraypanel', 'main', 'net_out')).forEach(function(e) {
+		var i = e.indexOf('=');
+		if (i > 0) m[e.substring(0, i)] = e.substring(i + 1);
+	});
+	return m;
+}
+
+function setNetServer(net, out) {
+	var m = netServers();
+	if (out) m[net] = out; else delete m[net];
+	var v = Object.keys(m).map(function(k) { return k + '=' + m[k]; });
+	uci.set('xraypanel', 'main', 'net_out', v.length ? v : null);
+}
+
+function servers() {
+	return uci.sections('xraypanel', 'node').filter(function(n) { return n.enabled != '0'; }).map(function(n) {
+		return { tag: 'node-' + n['.name'], label: n.label || n['.name'] };
+	});
+}
+
+function serverLabel(tag) {
+	var n = servers().filter(function(s) { return s.tag == tag; })[0];
+	return n ? n.label : tag.replace(/^node-/, '');
+}
+
 // LAN-side interfaces a Wi-Fi network can join, with whether each goes through Xray.
 function routes() {
 	var prox = proxiedDevices();
+	var srv = netServers();
 	return uci.sections('network', 'interface').filter(function(s) {
 		return s.proto == 'static' && s['.name'] != 'loopback' && s.device && /^br-/.test(s.device);
 	}).map(function(s) {
@@ -88,7 +117,8 @@ function routes() {
 			device: s.device,
 			addr: s.ipaddr || '',
 			// lan_ifaces may hold device names (br-lan) or network names (lan).
-			proxied: prox.indexOf(s.device) > -1 || prox.indexOf(s['.name']) > -1
+			proxied: prox.indexOf(s.device) > -1 || prox.indexOf(s['.name']) > -1,
+			server: srv[s['.name']] || ''
 		};
 	});
 }
@@ -169,11 +199,13 @@ return view.extend({
 		});
 	},
 
-	// Creates a separate network that never goes through Xray: bridge, subnet, DHCP and a firewall zone to WAN.
-	createDirect: function() {
+	// Creates a separate network with its own bridge, subnet, DHCP and a firewall zone to WAN.
+	// A proxied one is added to the interfaces Xray routes; a direct one never goes through Xray.
+	createNet: function(proxied) {
 		var n = freeSubnet(this.usedAddrs);
 		if (n == null) return null;
-		var name = uci.get('network', 'direct') ? 'direct' + n : 'direct';
+		var base = proxied ? 'xnet' : 'direct';
+		var name = uci.get('network', base) ? base + n : base;
 		var dev = 'br-' + name;
 
 		var d = uci.add('network', 'device');
@@ -202,6 +234,15 @@ return view.extend({
 		var f = uci.add('firewall', 'forwarding');
 		uci.set('firewall', f, 'src', name);
 		uci.set('firewall', f, 'dest', 'wan');
+
+		if (proxied) {
+			// An empty list means br-lan, so br-lan stays in it when the first extra network is added.
+			var devs = proxiedDevices();
+			if (devs.indexOf(dev) < 0) devs.push(dev);
+			uci.set('xraypanel', 'main', 'lan_ifaces', devs);
+		}
+		// The subnet is taken now, so another new network before Save & Apply gets a different one.
+		this.usedAddrs.push('192.168.' + n + '.1');
 
 		return name;
 	},
@@ -286,12 +327,40 @@ return view.extend({
 		macBox.style.display = g.macfilter ? '' : 'none';
 
 		var hasDirect = rts.some(function(r) { return !r.proxied; });
+		routeOpts.push(E('label', { 'class': 'xn-route' }, [
+			E('input', { 'type': 'radio', 'name': 'xn-route', 'value': '__new_proxied' }),
+			' ', _('New network through Xray'), ' ', pill('#2e7d32', _('Through Xray')),
+			' ', E('span', { 'class': 'xn-muted' }, _('creates its own subnet, so it can use its own server'))
+		]));
 		if (!hasDirect)
 			routeOpts.push(E('label', { 'class': 'xn-route' }, [
 				E('input', { 'type': 'radio', 'name': 'xn-route', 'value': '__new_direct' }),
 				' ', _('New direct network'), ' ', pill('#1976d2', _('Direct')),
 				' ', E('span', { 'class': 'xn-muted' }, _('creates its own subnet'))
 			]));
+
+		// Which server a proxied network uses. It belongs to the network, not to this SSID.
+		var srvChoices = { '': _('Main server (same as the other networks)') };
+		servers().forEach(function(n) { srvChoices[n.tag] = _('Server: %s').format(n.label); });
+		var cur = (rts.filter(function(r) { return r.name == g.network; })[0] || {}).server || '';
+		if (cur && !srvChoices[cur]) srvChoices[cur] = _('Server: %s (off or missing)').format(cur.replace(/^node-/, ''));
+		var srv = new ui.Select(cur, srvChoices, { sort: false });
+		var srvNote = E('div', { 'class': 'xn-muted', 'style': 'font-size:.85em;margin-top:4px;max-width:440px' });
+		var srvBox = E('div', { 'style': 'margin-top:8px' }, [ srv.render(), srvNote ]);
+		var showSrv = function() {
+			var r = body.querySelector('input[name=xn-route]:checked');
+			var v = r ? r.value : g.network;
+			var rt = rts.filter(function(x) { return x.name == v; })[0];
+			var shared = rt ? groups().filter(function(o) { return o.network == v && o.ssid != g.ssid; }) : [];
+			srvBox.style.display = (v == '__new_proxied' || (rt && rt.proxied)) ? '' : 'none';
+			srvNote.textContent = v == '__new_proxied'
+				? _('Only this Wi-Fi will be on the new network.')
+				: shared.length
+					? _('This setting belongs to network "%s", so it also applies to: %s. Pick "New network through Xray" to give only this Wi-Fi its own server.').format(v, shared.map(function(o) { return o.ssid; }).join(', '))
+					: _('Applies to every device on network "%s". Direct and blocked rules still apply; traffic that would go through the proxy uses this server.').format(v);
+		};
+		routeOpts.forEach(function(l) { l.querySelector('input').addEventListener('change', showSrv); });
+		routeOpts.push(srvBox);
 
 		var body = E('div', { 'class': 'xn-form' }, [
 			E('div', { 'class': 'cbi-value' }, [ E('div', { 'class': 'cbi-value-title' }, _('Name (SSID)')), ssid.render() ]),
@@ -319,13 +388,16 @@ return view.extend({
 					if (!picked.length) { ui.addNotification(null, E('p', _('Pick at least one band')), 'warning'); return; }
 					var r = body.querySelector('input[name=xn-route]:checked');
 					var net = r ? r.value : g.network;
-					if (net == '__new_direct') {
-						net = self.createDirect();
+					var prox = net == '__new_proxied';
+					if (net == '__new_direct' || prox) {
+						net = self.createNet(prox);
 						if (!net) {
 							ui.addNotification(null, E('p', _('No free 192.168.x.0/24 subnet left for a new network.')), 'error');
 							return;
 						}
 					}
+					if (prox || routes().some(function(x) { return x.name == net && x.proxied; }))
+						setNetServer(net, srv.getValue());
 					self.save(g, {
 						ssid: ssid.getValue(), encryption: sec.getValue(),
 						key: sec.getValue() == 'none' ? '' : key.getValue(),
@@ -340,6 +412,7 @@ return view.extend({
 		]);
 
 		ui.showModal(isNew ? _('New Wi-Fi network') : _('Edit Wi-Fi network'), body);
+		showSrv();
 	},
 
 	save: function(g, v) {
@@ -402,7 +475,7 @@ return view.extend({
 		var self = this;
 		dom.content(self.listBox, self.renderList());
 		return uci.save().then(function() {
-			return uci.load([ 'wireless', 'network', 'firewall', 'dhcp' ]);
+			return uci.load([ 'wireless', 'network', 'firewall', 'dhcp', 'xraypanel' ]);
 		}).then(function() {
 			dom.content(self.listBox, self.renderList());
 			ui.changes.init();
@@ -425,7 +498,8 @@ return view.extend({
 		var rows = gs.map(function(g) {
 			var r = rts[g.network];
 			var route = !r ? pill('#90a4ae', g.network || _('none'))
-				: r.proxied ? pill('#2e7d32', _('Through Xray')) : pill('#1976d2', _('Direct'));
+				: r.proxied ? pill('#2e7d32', r.server ? _('Server: %s').format(serverLabel(r.server)) : _('Through Xray'))
+				: pill('#1976d2', _('Direct'));
 			var n = 0;
 			g.sids.forEach(function(sid) { n += clients[sid] || 0; });
 

@@ -17,6 +17,7 @@ It is built for routers with little memory. There is no extra daemon: the panel 
 - **Automatic geo updates.** Daily or weekly through cron, downloaded through the proxy when possible. Files are checked against the published SHA-256 when the source has one, and tested against your rules before they replace the old ones.
 - **Fail-open watchdog.** Every minute the router checks the proxy. LAN traffic only goes through Xray while it answers. After three failed checks, LAN goes back to direct until the proxy recovers.
 - **Per-device and per-network bypass.** Choose which interfaces are routed (for example only `br-lan`, so a second "direct" Wi-Fi stays direct) and which IPs never go through Xray. The *Devices* page lists the clients it sees and lets you tick the ones that should go direct; the change applies at once, without restarting Xray.
+- **A server per Wi-Fi network.** On the *Wi-Fi* page a network that goes through Xray can use its own server instead of the main one, for example one SSID through a Turkey server and another through Germany. Pick *New network through Xray* to give one SSID its own subnet first. Direct and blocked rules still apply on that network; only the traffic that would use the proxy goes to its server.
 - **QUIC blocking** so apps fall back to TCP, which the redirect can carry.
 
 ## Requirements
@@ -103,6 +104,7 @@ curl -fsSL https://raw.githubusercontent.com/aliasgari-ka/luci-app-xraypanel/mai
 
 - **Servers**: لینک‌های `vmess://`، `vless://`، `trojan://` یا `ss://` را پیست کنید یا لینک اشتراک (Subscription) اضافه کنید و *Update subscriptions* را بزنید، *Enable Xray* را روشن کنید و **Save & Apply** بزنید. *Test all servers* تأخیر واقعی هر سرور و *Speed test* سرعت سرور فعلی را نشان می‌دهد (تا ۱۰ مگابایت مصرف می‌کند).
 - **Routing**: مثل پنل ثنایی (3x-ui): بخش Basic برای لیست‌های مستقیم و مسدود، و جدول قوانین با دامنه، IP، پورت، IP دستگاه مبدأ، پروتکل و خروجی (مستقیم، پروکسی، یک سرور خاص یا مسدود). سایت‌ها، بانک‌ها و اپ‌های ایرانی به‌صورت پیش‌فرض مستقیم می‌روند.
+- **Wi-Fi**: هر شبکه‌ی وای‌فای که از Xray رد می‌شود می‌تواند سرور جدای خودش را داشته باشد (مثلاً یک SSID با سرور ترکیه و دیگری با آلمان). برای اینکه فقط یک SSID سرور جدا بگیرد، *New network through Xray* را انتخاب کنید تا شبکه‌ی خودش را داشته باشد.
 - **Devices**: لیست دستگاه‌های شبکه؛ با تیک زدن، یک دستگاه روی شبکه‌ی پراکسی مستقیم می‌رود، بدون ری‌استارت Xray.
 - **Settings**: انتخاب شبکه‌هایی که از Xray رد شوند، دستگاه‌هایی که همیشه مستقیم بمانند، DNS (ساده یا رمزنگاری‌شده با DoH) و زمان‌بندی آپدیت geo.
 - **Status**: وضعیت، تأخیر پروکسی، مصرف رم و لاگ.

@@ -160,11 +160,15 @@ function nodeUsable(map, sid) {
 
 // The server lists are filled when the widget is drawn, so servers added or deleted in the grid
 // below show up without reloading the page. A saved value that names a deleted server is removed.
-function serverChoices(o, none) {
+// withSubs also lists each subscription as one choice ("sub:<section>"): all of its servers.
+function serverChoices(o, none, withSubs) {
 	o.renderWidget = function(section_id, option_index, cfgvalue) {
 		this.keylist = [];
 		this.vallist = [];
 		if (none) this.value('', none);
+		if (withSubs) uci.sections('xraypanel', 'subscription').forEach(function(s) {
+			this.value('sub:' + s['.name'], _('All servers of subscription: %s').format(s.label || s['.name']));
+		}, this);
 		uci.sections('xraypanel', 'node').forEach(function(n) {
 			var label = n.label || summary(n.link);
 			this.value(n['.name'], (n.enabled == '0' || !n.link) ? _('%s (off)').format(label) : label);
@@ -172,10 +176,18 @@ function serverChoices(o, none) {
 		return form.ListValue.prototype.renderWidget.apply(this, arguments);
 	};
 	o.write = function(section_id, value) {
-		if (value && !uci.get('xraypanel', value))
+		var ref = (value && value.indexOf('sub:') == 0) ? value.substring(4) : value;
+		if (ref && !uci.get('xraypanel', ref))
 			return this.remove(section_id);
 		return form.ListValue.prototype.write.apply(this, arguments);
 	};
+}
+
+// Usable servers of a subscription other than the main one (the grid's "On" box may not be saved yet).
+function subServers(map, sub, main) {
+	return uci.sections('xraypanel', 'node').filter(function(n) {
+		return n.sub == sub && n['.name'] != main && nodeUsable(map, n['.name']);
+	});
 }
 
 // The import box takes one link per line, or a single JSON outbound (which may span lines).
@@ -287,11 +299,14 @@ return view.extend({
 		};
 
 		o = s.option(form.ListValue, 'backup', _('Backup server'),
-			_('Used only while the main server does not answer the latency test; traffic returns to the main server once it answers again.'));
+			_('Used only while the main server does not answer the latency test; traffic returns to the main server once it answers again. With a whole subscription, the fastest of its servers that answers is used.'));
 		o.depends('mode', 'single');
-		serverChoices(o, _('None'));
+		serverChoices(o, _('None'), true);
 		o.validate = function(section_id, value) {
 			if (!value) return true;
+			if (value.indexOf('sub:') == 0)
+				return subServers(this.map, value.substring(4), this.section.formvalue(section_id, 'node')).length
+					? true : _('This subscription has no usable server other than the main one; update it first');
 			if (value == this.section.formvalue(section_id, 'node'))
 				return _('Pick a different server than the main one');
 			return nodeUsable(this.map, value) ? true : _('This server is turned off or has no link');
@@ -345,6 +360,15 @@ return view.extend({
 		s.addremove = true;
 		s.anonymous = true;
 		s.nodescriptions = true;
+		// Deleting a subscription deletes the servers it brought in.
+		s.handleRemove = function(section_id, ev) {
+			uci.sections('xraypanel', 'node').forEach(function(n) {
+				if (n.sub == section_id) uci.remove('xraypanel', n['.name']);
+			});
+			if (uci.get('xraypanel', 'main', 'backup') == 'sub:' + section_id)
+				uci.unset('xraypanel', 'main', 'backup');
+			return form.GridSection.prototype.handleRemove.apply(this, arguments);
+		};
 		s.modaltitle = function(section_id) {
 			return _('Subscription: %s').format('%h'.format(uci.get('xraypanel', section_id, 'label') || _('new')));
 		};

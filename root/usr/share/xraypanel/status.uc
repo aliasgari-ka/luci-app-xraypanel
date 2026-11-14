@@ -114,7 +114,13 @@ if (target == 'balancer') {
 	let alive = [];
 	for (let tag, o in (cache.observatory ?? {}))
 		if (o?.alive && substr(tag, 0, 5) == 'node-') push(alive, [ tag, +(o.delay ?? 0) ]);
-	if (bal?.strategy?.type == 'leastPing' && length(alive))
+	if (bal?.strategy?.type == 'leastLoad' && length(alive)) {
+		// Backup subscription: the main server (first selector) while alive, else the fastest backup.
+		const main_tag = bal.selector?.[0];
+		const m = filter(alive, a => a[0] == main_tag);
+		alive = length(m) ? m : [ sort(alive, (a, b) => a[1] - b[1])[0] ];
+	}
+	else if (bal?.strategy?.type == 'leastPing' && length(alive))
 		alive = [ sort(alive, (a, b) => a[1] - b[1])[0] ];
 	for (let t in (length(alive) ? map(alive, a => a[0]) : [ bal?.fallbackTag ]))
 		if (t && substr(t, 0, 5) == 'node-') push(in_use, substr(t, 5));
