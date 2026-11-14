@@ -401,6 +401,13 @@ for (let n in nodes) {
 	if (type(st.address) == 'string') add_server(st.address);
 }
 
+// Usable servers of one subscription. Selectors match tag prefixes, so a tag that starts
+// another server's tag is left out (it would pull that server in as well).
+function sub_tags(sid, except) {
+	let t = map(filter(nodes, n => n.tag != except && node_sub[n.tag] == sid), n => n.tag);
+	return filter(t, x => !length(filter(nodes, n => n.tag != x && index(n.tag, x) == 0)));
+}
+
 let target, backup = null;
 if (opt(main.mode, 'balance') == 'single' || length(nodes) == 1) {
 	const want = 'node-' + opt(main.node, '');
@@ -419,10 +426,8 @@ if (opt(main.mode, 'balance') == 'single' || length(nodes) == 1) {
 			push(warnings, `The main server's name is the start of another server's name (${substr(clash[0].tag, 5)}), so there is no backup. Delete and add one of them again to get a new name.`);
 		else if (substr(bk, 0, 4) == 'sub:') {
 			// Every usable server of one subscription is a backup; the fastest live one takes over.
-			const sid = substr(bk, 4), main_tag = target.outboundTag;
-			let spares = map(filter(nodes, n => n.tag != main_tag && node_sub[n.tag] == sid), n => n.tag);
-			// A spare whose tag starts another server's tag would pull that server in as well.
-			spares = filter(spares, t => !length(filter(nodes, n => n.tag != t && index(n.tag, t) == 0)));
+			const main_tag = target.outboundTag;
+			const spares = sub_tags(substr(bk, 4), main_tag);
 			if (length(spares)) {
 				backup = { main: main_tag, spares };
 				target = { balancerTag: 'balancer' };
@@ -497,9 +502,10 @@ function net_cidr(name) {
 	return sprintf('%d.%d.%d.%d/%d', (net >> 24) & 255, (net >> 16) & 255, (net >> 8) & 255, net & 255, bits);
 }
 
-// Networks that use their own server instead of the main one: main.net_out holds "network=node-x".
-// Their traffic that would go through the proxy goes to that server; direct and block rules still apply.
-let net_routes = [];
+// Networks that use their own server instead of the main one: main.net_out holds "network=node-x",
+// or "network=sub:<section>" for the fastest live server of a subscription.
+// Their traffic that would go through the proxy goes there; direct and block rules still apply.
+let net_routes = [], net_balancers = [];
 for (let e in list(main.net_out)) {
 	const i = index(e, '=');
 	if (i < 1) continue;
@@ -507,6 +513,17 @@ for (let e in list(main.net_out)) {
 	const cidr = net_cidr(name);
 	if (!cidr) {
 		push(warnings, `Network "${name}" has no IPv4 subnet, so its own server is not used`);
+		continue;
+	}
+	if (substr(out, 0, 4) == 'sub:') {
+		const sel = sub_tags(substr(out, 4));
+		if (!length(sel)) {
+			push(warnings, `Network "${name}" uses a subscription with no usable server, so it uses the main server`);
+			continue;
+		}
+		const tag = 'net-' + name;
+		push(net_balancers, { tag, sel });
+		push(net_routes, { cidr, t: { balancerTag: tag } });
 		continue;
 	}
 	const t = outref(out, 'Network ' + name);
@@ -696,7 +713,7 @@ push(outbounds, { tag: 'block', protocol: 'blackhole' });
 if (dns_on) push(outbounds, { tag: 'dns-out', protocol: 'dns',
 	settings: { rules: [ { action: 'hijack', qtype: '1,28' }, { action: 'direct' } ] } });
 
-let balancers = null, observatory = null;
+let balancers = [], probe_sel = [];
 if (target.balancerTag) {
 	// Selectors are prefixes; a backup pair names the main server exactly.
 	const sel = backup?.spares ? [ backup.main, ...backup.spares ] : backup ? [ backup.main ] : [ 'node-' ];
@@ -707,21 +724,30 @@ if (target.balancerTag) {
 	if (backup?.spares)
 		strat = { type: 'leastLoad', settings: { expected: 1,
 			costs: map(backup.spares, t => ({ regexp: false, match: t, value: 100000000 })) } };
-	balancers = [ {
+	push(balancers, {
 		tag: 'balancer',
 		selector: sel,
 		strategy: strat,
 		// With every server down, keep trying the main one.
 		fallbackTag: backup?.spares ? backup.main : backup ? backup.spare : nodes[0].tag
-	} ];
-	// Xray needs the observatory for every strategy once fallbackTag is set.
-	observatory = {
-		subjectSelector: sel,
-		probeUrl: probe_url,
-		probeInterval: `${probe_interval}s`,
-		enableConcurrency: true
-	};
+	});
+	probe_sel = [ ...sel ];
 }
+// A network on a whole subscription uses its fastest live server.
+for (let b in net_balancers) {
+	push(balancers, { tag: b.tag, selector: b.sel, strategy: { type: 'leastPing' }, fallbackTag: b.sel[0] });
+	for (let t in b.sel)
+		// 'node-' already covers every server.
+		if (index(probe_sel, t) < 0 && index(probe_sel, 'node-') < 0) push(probe_sel, t);
+}
+// Xray needs the observatory for every strategy once fallbackTag is set.
+const observatory = length(balancers) ? {
+	subjectSelector: probe_sel,
+	probeUrl: probe_url,
+	probeInterval: `${probe_interval}s`,
+	enableConcurrency: true
+} : null;
+if (!length(balancers)) balancers = null;
 
 const cfg = clean({
 	log: {

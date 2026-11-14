@@ -90,12 +90,12 @@ case "$1" in
 		done
 		;;
 	speed)
-		# Downloads up to 10 MB through the route in use (counts against that server's traffic).
+		# Downloads up to 5 MB (10 s at most) through the route in use; counts against that server's traffic.
 		xp_running || { echo "ERROR: Xray is not running"; exit 0; }
 		# The body is piped away instead of written to /dev/null: on some builds /dev/null is a
 		# plain file on a tiny /dev tmpfs, and curl stops with a write error after ~0.5 MB.
 		set -- $(curl -s -w '\n%{http_code} %{speed_download} %{size_download} %{time_total}' \
-			-x socks5h://127.0.0.1:$XP_PORT_SOCKS -m 15 'https://speed.cloudflare.com/__down?bytes=10000000' 2>&1 | tail -n 1)
+			-x socks5h://127.0.0.1:$XP_PORT_SOCKS -m 10 'https://speed.cloudflare.com/__down?bytes=5000000' 2>&1 | tail -n 1)
 		echo "${2:-0} ${3:-0} ${4:-0}" | awk '$2 > 100000 { printf "OK: download %.1f Mbit/s (%.1f MB in %.1f s)\n", $1 * 8 / 1000000, $2 / 1048576, $3; ok = 1 }
 			END { exit !ok }' || echo "ERROR: speed test failed (HTTP ${1:-none})"
 		;;

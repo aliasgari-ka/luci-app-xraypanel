@@ -27,17 +27,17 @@ const url = trim(p?.read('all') ?? '') || 'https://www.gstatic.com/generate_204'
 p?.close();
 
 fs.mkdir(RUN);
-let cmd = '';
-let names = [];
+let names = [], cmds = [];
 for (let ib in cfg.inbounds) {
 	if (substr(ib.tag, 0, 5) != 'test-') continue;
 	const name = substr(ib.tag, 5);
 	if (!match(name, /^[A-Za-z0-9_]+$/)) continue;
 	push(names, name);
-	cmd += sprintf("(curl -s -o /dev/null -m 10 -w '%%{http_code} %%{time_total}' -x socks5h://127.0.0.1:%d %s > %s/t-%s 2>/dev/null) & ",
-		int(ib.port), shq(url), RUN, name);
+	push(cmds, sprintf("(curl -s -o /dev/null -m 10 -w '%%{http_code} %%{time_total}' -x socks5h://127.0.0.1:%d %s > %s/t-%s 2>/dev/null) & ",
+		int(ib.port), shq(url), RUN, name));
 }
-system(cmd + 'wait');
+// All at once: a curl costs about 200 KB here, and LuCI gives up on a command after 30 s.
+system(join('', cmds) + 'wait');
 
 let res = {};
 const now = time();
@@ -55,5 +55,12 @@ for (let name in names) {
 }
 fs.writefile(`${RUN}/tests.json`, sprintf('%J', res));
 
-const good = length(filter(names, n => res[n].ok));
-print(`OK: ${good} of ${length(names)} servers answered\n`);
+const good = sort(filter(names, n => res[n].ok), (a, b) => res[a].ms - res[b].ms);
+if (!length(good)) {
+	print(`ERROR: none of ${length(names)} servers answered\n`);
+	exit(0);
+}
+const lp = fs.popen(`uci -q get xraypanel.${good[0]}.label`, 'r');
+const best = trim(lp?.read('all') ?? '') || good[0];
+lp?.close();
+print(`OK: ${length(good)} of ${length(names)} servers answered. Fastest: ${best} (${res[good[0]].ms} ms)\n`);
