@@ -9,6 +9,24 @@ mkdir -p "$XP_RUN"
 exec 9>"$XP_RUN/lock"
 flock -n 9 || exit 0
 
+# VMess and REALITY servers refuse clients whose clock is off by about 2 minutes. Where NTP (UDP 123)
+# gets no answer the clock drifts, so after a failed probe it is set from a plain HTTP Date header
+# (sent directly, not through Xray). Only a clear gap is fixed, so normal NTP keeps control.
+fix_clock() {
+	local u d t now gap
+	for u in http://1.1.1.1/ http://8.8.8.8/; do
+		d=$(curl -sI -m 5 "$u" 2>/dev/null | sed -n 's/^[Dd]ate: [A-Za-z]*, *//p' | tr -d '\r')
+		[ -n "$d" ] && break
+	done
+	[ -n "$d" ] || return 0
+	t=$(date -u -D '%d %b %Y %H:%M:%S' -d "${d% GMT}" +%s 2>/dev/null) || return 0
+	now=$(date +%s)
+	gap=$((t - now))
+	[ "${gap#-}" -ge 30 ] || return 0
+	date -u -s "@$t" >/dev/null 2>&1 || return 0
+	logger -t xraypanel "router clock was ${gap}s off (no NTP answer); set from HTTP time"
+}
+
 if ! xp_enabled || ! xp_running; then
 	[ -f "$XP_RUN/active" ] && $FW stop
 	exit 0
@@ -35,6 +53,7 @@ if [ "${code:-0}" -ge 200 ] 2>/dev/null && [ "$code" -lt 400 ]; then
 		$FW start
 	fi
 else
+	fix_clock
 	fails=$(( $(cat "$XP_RUN/fails" 2>/dev/null || echo 0) + 1 ))
 	echo "$fails" > "$XP_RUN/fails"
 	if [ "$fails" -ge 3 ] && [ -f "$XP_RUN/active" ]; then

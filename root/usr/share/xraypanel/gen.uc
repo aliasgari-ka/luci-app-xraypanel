@@ -352,6 +352,8 @@ const main = uci.get_all('xraypanel', 'main') ?? {};
 const check_nodes = getenv('XP_CHECK_NODES') == '1';
 let warnings = [];
 let nodes = [];
+// Subscription of each usable server (tag -> subscription section), for a backup that is a whole subscription.
+let node_sub = {};
 
 uci.foreach('xraypanel', 'node', (s) => {
 	if (!on(s.enabled, true) || !s.link) return;
@@ -376,6 +378,7 @@ uci.foreach('xraypanel', 'node', (s) => {
 		return;
 	}
 	push(nodes, ob);
+	if (s.sub) node_sub[ob.tag] = s.sub;
 });
 
 if (!length(nodes)) {
@@ -414,6 +417,19 @@ if (opt(main.mode, 'balance') == 'single' || length(nodes) == 1) {
 		const clash = filter(nodes, n => n.tag != target.outboundTag && index(n.tag, target.outboundTag) == 0);
 		if (length(clash))
 			push(warnings, `The main server's name is the start of another server's name (${substr(clash[0].tag, 5)}), so there is no backup. Delete and add one of them again to get a new name.`);
+		else if (substr(bk, 0, 4) == 'sub:') {
+			// Every usable server of one subscription is a backup; the fastest live one takes over.
+			const sid = substr(bk, 4), main_tag = target.outboundTag;
+			let spares = map(filter(nodes, n => n.tag != main_tag && node_sub[n.tag] == sid), n => n.tag);
+			// A spare whose tag starts another server's tag would pull that server in as well.
+			spares = filter(spares, t => !length(filter(nodes, n => n.tag != t && index(n.tag, t) == 0)));
+			if (length(spares)) {
+				backup = { main: main_tag, spares };
+				target = { balancerTag: 'balancer' };
+			}
+			else
+				push(warnings, 'The backup subscription has no usable server other than the main one, so there is no backup.');
+		}
 		else if (length(filter(nodes, n => n.tag == 'node-' + bk)) && 'node-' + bk != target.outboundTag) {
 			// Main server only, the backup takes over once the observatory marks the main one dead.
 			backup = { main: target.outboundTag, spare: 'node-' + bk };
@@ -638,12 +654,20 @@ if (dns_on) push(outbounds, { tag: 'dns-out', protocol: 'dns',
 let balancers = null, observatory = null;
 if (target.balancerTag) {
 	// Selectors are prefixes; a backup pair names the main server exactly.
-	const sel = backup ? [ backup.main ] : [ 'node-' ];
+	const sel = backup?.spares ? [ backup.main, ...backup.spares ] : backup ? [ backup.main ] : [ 'node-' ];
+	let strat = { type: backup ? 'leastPing' : strategy };
+	// leastLoad ranks live servers by delay * sqrt(cost). The huge cost keeps the main server first
+	// while it answers; once it is down the fastest live backup wins. Cost matching is by substring,
+	// which the prefix check above makes exact.
+	if (backup?.spares)
+		strat = { type: 'leastLoad', settings: { expected: 1,
+			costs: map(backup.spares, t => ({ regexp: false, match: t, value: 100000000 })) } };
 	balancers = [ {
 		tag: 'balancer',
 		selector: sel,
-		strategy: { type: backup ? 'leastPing' : strategy },
-		fallbackTag: backup ? backup.spare : nodes[0].tag
+		strategy: strat,
+		// With every server down, keep trying the main one.
+		fallbackTag: backup?.spares ? backup.main : backup ? backup.spare : nodes[0].tag
 	} ];
 	// Xray needs the observatory for every strategy once fallbackTag is set.
 	observatory = {
