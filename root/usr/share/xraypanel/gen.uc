@@ -576,7 +576,8 @@ uci.foreach('xraypanel', 'rule', (s) => {
 		return;
 	}
 
-	// Every filled field must match (AND), as in Xray and 3x-ui.
+	// Every filled field must match (AND), as in Xray and 3x-ui, except domain and IP: either one
+	// matches (OR), since a site opened by its IP has no domain and would never match both.
 	let f = {};
 	const dom = entries(s.domain, 'domain', label);
 	const ip = entries(s.ip, 'ip', label);
@@ -611,7 +612,15 @@ uci.foreach('xraypanel', 'rule', (s) => {
 		push(warnings, `Rule "${label}" has nothing to match and was ignored`);
 		return;
 	}
-	push(rules, rule(f, t));
+	if (f.domain && f.ip) {
+		const byip = { ...f };
+		delete f.ip;
+		delete byip.domain;
+		push(rules, rule(f, t));
+		push(rules, rule(byip, t));
+	}
+	else
+		push(rules, rule(f, t));
 });
 
 push(rules, rule({ network: 'tcp,udp' }, (opt(main.default_out, 'proxy') == 'direct') ? { outboundTag: 'direct' } : target));
