@@ -478,6 +478,42 @@ function outref(name, label) {
 	return target;
 }
 
+// A network's subnet as a.b.c.d/n, from /etc/config/network ("192.168.3.1/24" or ipaddr plus netmask).
+function net_cidr(name) {
+	let nc = cursor();
+	let a = nc.get('network', name, 'ipaddr');
+	if (type(a) == 'array') a = a[0];
+	const m = match(a ?? '', /^([0-9]+)[.]([0-9]+)[.]([0-9]+)[.]([0-9]+)(\/([0-9]+))?$/);
+	if (!m) return null;
+	let bits = m[6] != null ? int(m[6]) : null;
+	if (bits == null) {
+		bits = 0;
+		for (let o in split(nc.get('network', name, 'netmask') ?? '255.255.255.0', '.'))
+			for (let v = int(o); v > 0; v = (v << 1) & 255) bits++;
+	}
+	if (bits < 8 || bits > 32) return null;
+	const ip = (((int(m[1]) * 256 + int(m[2])) * 256 + int(m[3])) * 256) + int(m[4]);
+	const net = ip - (ip % (1 << (32 - bits)));
+	return sprintf('%d.%d.%d.%d/%d', (net >> 24) & 255, (net >> 16) & 255, (net >> 8) & 255, net & 255, bits);
+}
+
+// Networks that use their own server instead of the main one: main.net_out holds "network=node-x".
+// Their traffic that would go through the proxy goes to that server; direct and block rules still apply.
+let net_routes = [];
+for (let e in list(main.net_out)) {
+	const i = index(e, '=');
+	if (i < 1) continue;
+	const name = substr(e, 0, i), out = substr(e, i + 1);
+	const cidr = net_cidr(name);
+	if (!cidr) {
+		push(warnings, `Network "${name}" has no IPv4 subnet, so its own server is not used`);
+		continue;
+	}
+	const t = outref(out, 'Network ' + name);
+	if (t !== target) push(net_routes, { cidr, t });
+}
+
+
 // Sorts one "match" entry into domain, ip or port. Returns null (with a warning) for bad entries.
 // A geosite:/geoip: category missing from the geo files makes Xray reject the whole config,
 // so such entries are skipped with a warning. Codes are stored as plain text in the .dat files.
@@ -560,6 +596,15 @@ let rules = [
 	rule({ inboundTag: [ 'socks-in' ] }, target)
 ];
 
+// Adds a rule; a rule that sends to the proxy gets one copy in front of it for each network with
+// its own server. Rules that already pick devices by source IP are left as they are.
+function add_rule(f, t) {
+	if (t === target && f.source == null)
+		for (let n in net_routes)
+			push(rules, rule({ ...f, source: [ n.cidr ] }, n.t));
+	push(rules, rule(f, t));
+}
+
 // "Basic" lists come first, like in 3x-ui.
 for (let b in [ [ 'block_ip', 'ip', 'block', 'Blocked IPs' ], [ 'block_domain', 'domain', 'block', 'Blocked domains' ],
                 [ 'direct_ip', 'ip', 'direct', 'Direct IPs' ], [ 'direct_domain', 'domain', 'direct', 'Direct domains' ] ]) {
@@ -586,9 +631,9 @@ uci.foreach('xraypanel', 'rule', (s) => {
 			push(warnings, `Rule "${label}" has nothing to match and was ignored`);
 			return;
 		}
-		if (length(got.domain)) push(rules, rule({ domain: got.domain }, t));
-		if (length(got.ip)) push(rules, rule({ ip: got.ip }, t));
-		if (length(got.port)) push(rules, rule({ port: join(',', got.port) }, t));
+		if (length(got.domain)) add_rule({ domain: got.domain }, t);
+		if (length(got.ip)) add_rule({ ip: got.ip }, t);
+		if (length(got.port)) add_rule({ port: join(',', got.port) }, t);
 		return;
 	}
 
@@ -632,14 +677,14 @@ uci.foreach('xraypanel', 'rule', (s) => {
 		const byip = { ...f };
 		delete f.ip;
 		delete byip.domain;
-		push(rules, rule(f, t));
-		push(rules, rule(byip, t));
+		add_rule(f, t);
+		add_rule(byip, t);
 	}
 	else
-		push(rules, rule(f, t));
+		add_rule(f, t);
 });
 
-push(rules, rule({ network: 'tcp,udp' }, (opt(main.default_out, 'proxy') == 'direct') ? { outboundTag: 'direct' } : target));
+add_rule({ network: 'tcp,udp' }, (opt(main.default_out, 'proxy') == 'direct') ? { outboundTag: 'direct' } : target);
 
 let outbounds = [
 	{ tag: 'direct', protocol: 'freedom', streamSettings: { sockopt: { domainStrategy: 'UseIPv4' } } }
