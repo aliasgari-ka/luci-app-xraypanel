@@ -237,7 +237,14 @@ return view.extend({
 	},
 
 	speedTest: function() {
-		return fs.exec_direct('/usr/share/xraypanel/ctl.sh', [ 'speed' ]).then(notifyLines).catch(function(e) {
+		var used = Object.keys(this.inUse || {}).map(function(sid) {
+			return uci.get('xraypanel', sid, 'label') || sid;
+		});
+		return fs.exec_direct('/usr/share/xraypanel/ctl.sh', [ 'speed' ]).then(function(out) {
+			// Name the server the download went through, so results of different servers can be compared.
+			if (used.length == 1) out = String(out || '').replace(/^OK:\s*/, 'OK: ' + used[0] + ': ');
+			notifyLines(out);
+		}).catch(function(e) {
 			ui.addNotification(null, E('p', [ e.message ]), 'error');
 		});
 	},
@@ -460,7 +467,7 @@ return view.extend({
 				' ',
 				E('button', {
 					'class': 'cbi-button cbi-button-action',
-					'title': _('Downloads up to 10 MB through the server in use; that counts against its traffic.'),
+					'title': _('Downloads up to 5 MB through the server in use; that counts against its traffic.'),
 					'click': ui.createHandlerFn(self, 'speedTest')
 				}, _('Speed test')),
 				' ',

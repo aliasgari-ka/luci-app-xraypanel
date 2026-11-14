@@ -100,7 +100,15 @@ function servers() {
 	});
 }
 
+function subs() {
+	return uci.sections('xraypanel', 'subscription').map(function(s) {
+		return { tag: 'sub:' + s['.name'], label: s.label || s['.name'] };
+	});
+}
+
 function serverLabel(tag) {
+	var sb = subs().filter(function(s) { return s.tag == tag; })[0];
+	if (sb) return _('Subscription: %s').format(sb.label);
 	var n = servers().filter(function(s) { return s.tag == tag; })[0];
 	return n ? n.label : tag.replace(/^node-/, '');
 }
@@ -341,9 +349,11 @@ return view.extend({
 
 		// Which server a proxied network uses. It belongs to the network, not to this SSID.
 		var srvChoices = { '': _('Main server (same as the other networks)') };
+		// A whole subscription: its fastest server that answers is used.
+		subs().forEach(function(b) { srvChoices[b.tag] = _('All servers of subscription: %s').format(b.label); });
 		servers().forEach(function(n) { srvChoices[n.tag] = _('Server: %s').format(n.label); });
 		var cur = (rts.filter(function(r) { return r.name == g.network; })[0] || {}).server || '';
-		if (cur && !srvChoices[cur]) srvChoices[cur] = _('Server: %s (off or missing)').format(cur.replace(/^node-/, ''));
+		if (cur && !srvChoices[cur]) srvChoices[cur] = _('%s (off or missing)').format(cur.replace(/^(node-|sub:)/, ''));
 		var srv = new ui.Select(cur, srvChoices, { sort: false });
 		var srvNote = E('div', { 'class': 'xn-muted', 'style': 'font-size:.85em;margin-top:4px;max-width:440px' });
 		var srvBox = E('div', { 'style': 'margin-top:8px' }, [ srv.render(), srvNote ]);
@@ -498,7 +508,7 @@ return view.extend({
 		var rows = gs.map(function(g) {
 			var r = rts[g.network];
 			var route = !r ? pill('#90a4ae', g.network || _('none'))
-				: r.proxied ? pill('#2e7d32', r.server ? _('Server: %s').format(serverLabel(r.server)) : _('Through Xray'))
+				: r.proxied ? pill('#2e7d32', r.server ? (/^sub:/.test(r.server) ? serverLabel(r.server) : _('Server: %s').format(serverLabel(r.server))) : _('Through Xray'))
 				: pill('#1976d2', _('Direct'));
 			var n = 0;
 			g.sids.forEach(function(sid) { n += clients[sid] || 0; });
